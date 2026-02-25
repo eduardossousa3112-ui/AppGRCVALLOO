@@ -66,7 +66,6 @@
     db.version(1).stores({
       analyses: "++id, name, document, score, level, date",
       crimes: "++id, nome, tipo, risco",
-      factions: "++id, nome, regiao, perigo",
       manual: "id, content",
       settings: "id",
       products: "id, name, category, risk",
@@ -108,22 +107,13 @@
         await db.crimes.bulkAdd(sample);
       }
 
-      // facções (mantido)
-      const fcount = await db.factions.count();
-      if (fcount === 0) {
-        await db.factions.bulkAdd([
-          { nome: 'Primeiro Comando da Capital (PCC)', regiao:'Nacional', perigo:'Alta' },
-          { nome: 'Comando Vermelho (CV)', regiao:'Nacional', perigo:'Alta' }
-        ]);
-      }
-
       // settings (mantido)
       const sc = await db.settings.get('default');
       if(!sc) {
         const defaultSettings = {
           id: 'default',
-          puntos: { 
-            prod_baixo:2, prod_medio:7, prod_alto:15, 
+          puntos: {
+            prod_baixo:2, prod_medio:7, prod_alto:15,
             crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
             quadro_moderada:10, quadro_complexa:25, pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
             area_baixo:3, area_medio:8, area_alto:18
@@ -198,7 +188,7 @@
       const breakdown = { products:[], quadro:0, pep:0, media:0, sanctions:0, processos:[], area:0, totalBeforeMultipliers:0 };
 
       const pts = (settings && settings.puntos) ? settings.puntos : {
-        prod_baixo:2, prod_medio:7, prod_alto:15, 
+        prod_baixo:2, prod_medio:7, prod_alto:15,
         crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
         quadro_moderada:10, quadro_complexa:25,
         pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
@@ -221,7 +211,7 @@
       if (form.complexity === 'Moderada') { score += pts.quadro_moderada; breakdown.quadro = pts.quadro_moderada; }
       if (form.complexity === 'Complexa') { score += pts.quadro_complexa; breakdown.quadro = pts.quadro_complexa; }
 
-      if (form.pepType !== 'Nao') { score += pts.pep; breakdown.pep = pts.pep; }
+      if (form.pepType !== 'Nao' && (form.pepPersonIds || []).length > 0) { score += pts.pep; breakdown.pep = pts.pep; }
 
       if (form.negativeMedia) {
         const n = (form.mediaLinks || []).length || 1;
@@ -229,6 +219,10 @@
         score += add;
         breakdown.media = add;
       }
+      if (form.hasForeignPartner && settings?.multipliers?.estrangeiro) {
+        score *= settings.multipliers.estrangeiro;
+      }
+
       if (form.sanctionsList) {
         const n = (form.sanctionLinks || []).length || 1;
         const add = pts.sancao * n;
@@ -414,18 +408,15 @@
       const [settings, setSettings] = useState(null);
       const [products, setProducts] = useState([]);
       const [crimes, setCrimes] = useState([]);
-      const [factions, setFactions] = useState([]);
       const [areas, setAreas] = useState([]);
       const [prodEdit, setProdEdit] = useState({ id:'', name:'', category:'', risk:'Baixo' });
       const [crimeEdit, setCrimeEdit] = useState({ id:'', nome:'', tipo:'', risco:'Médio' });
-      const [factionEdit, setFactionEdit] = useState({ id:'', nome:'', regiao:'', perigo:'Média' });
       const [areaEdit, setAreaEdit] = useState({ id:'', name:'', risk:'Baixo' });
 
       useEffect(()=>{ (async ()=>{
         setSettings(await db.settings.get('default'));
         setProducts(await db.products.toArray());
         setCrimes(await db.crimes.toArray());
-        setFactions(await db.factions.toArray());
         setAreas(await db.areas.toArray());
       })(); }, []);
 
@@ -464,15 +455,6 @@
         refreshAll && refreshAll();
       };
       const deleteCrime = async (id) => { if(!confirm('Remover crime?')) return; await db.crimes.delete(id); setCrimes(await db.crimes.toArray()); refreshAll && refreshAll(); };
-
-      const saveFaction = async () => {
-        if(!factionEdit.nome) return alert('Nome obrigatório');
-        if(factionEdit.id) { await db.factions.put(factionEdit); }
-        else { await db.factions.add({ ...factionEdit, id: uid() }); }
-        setFactions(await db.factions.toArray()); setFactionEdit({ id:'', nome:'', regiao:'', perigo:'Média' });
-        refreshAll && refreshAll();
-      };
-      const deleteFaction = async (id) => { if(!confirm('Remover facção?')) return; await db.factions.delete(id); setFactions(await db.factions.toArray()); refreshAll && refreshAll(); };
 
       // Areas management
       const saveArea = async () => {
@@ -613,7 +595,7 @@
               </div>
 
               <div className="p-4 border rounded-2xl">
-                <h4 className="font-black mb-3">Gestão de Crimes & Facções</h4>
+                <h4 className="font-black mb-3">Gestão de Crimes</h4>
                 <div className="grid gap-2">
                   <div className="text-xs font-bold">Adicionar / Editar Crime</div>
                   <input placeholder="Nome do crime" className="border p-2 rounded" value={crimeEdit.nome} onChange={e=>setCrimeEdit({...crimeEdit, nome:e.target.value})} />
@@ -643,36 +625,6 @@
                       ))}
                     </div>
                   </div>
-
-                  <div style={{marginTop:12}}>
-                    <div className="text-xs font-bold">Gestão de Facções</div>
-                    <input placeholder="Nome da facção" className="border p-2 rounded" value={factionEdit.nome} onChange={e=>setFactionEdit({...factionEdit, nome:e.target.value})} />
-                    <input placeholder="Região" className="border p-2 rounded" value={factionEdit.regiao} onChange={e=>setFactionEdit({...factionEdit, regiao:e.target.value})} />
-                    <select className="border p-2 rounded" value={factionEdit.perigo} onChange={e=>setFactionEdit({...factionEdit, perigo:e.target.value})}>
-                      <option>Baixa</option><option>Média</option><option>Alta</option>
-                    </select>
-                    <div className="flex gap-2 mt-2">
-                      <button className="button-primary" onClick={saveFaction}>Salvar Facção</button>
-                      <button className="button-ghost" onClick={()=>setFactionEdit({ id:'', nome:'', regiao:'', perigo:'Média' })}>Limpar</button>
-                    </div>
-
-                    <div className="muted" style={{marginTop:8}}>Facções atuais</div>
-                    <div className="max-h-40 overflow-y-auto custom-scroll mt-2 space-y-2">
-                      {factions.map(f => (
-                        <div key={f.id} className="flex justify-between items-center p-2 border rounded">
-                          <div>
-                            <div style={{fontWeight:700}}>{f.nome}</div>
-                            <div className="muted small">{f.regiao} • {f.perigo}</div>
-                          </div>
-                          <div style={{display:'flex',gap:6}}>
-                            <button className="button-ghost" onClick={()=>setFactionEdit(f)}>Editar</button>
-                            <button className="button-ghost" onClick={()=>deleteFaction(f.id)}>Rem</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
                 </div>
               </div>
             </div>
@@ -723,8 +675,9 @@
       const [step, setStep] = useState(0);
       const [formData, setFormData] = useState({
         personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira',
-        capitalSocial:'', filialCount:0, objetivo:'cliente', objetivoLabel:'Cliente',
-        products: [], complexity: 'Simples', pepType: 'Nao', pepRole: '',
+        capitalSocial:'', filialCount:0, requestDate:'', responseDate:'', requestedBy:'', objetivo:'cliente', objetivoLabel:'Cliente',
+        checkItems: [], hasForeignPartner:false, pepType: 'Nao', pepRole: '', pepPersonIds: [],
+        products: [], complexity: 'Simples',
         negativeMedia: false, mediaLinks: [], sanctionsList:false, sanctionLinks: [],
         lawsuits: [], estrutura: { socios: [], dirigentes: [] },
         parecerFinal: '', analystName: '', reviewerName: '',
@@ -737,6 +690,25 @@
       const [settings, setSettings] = useState(null);
       const [areas, setAreas] = useState([]); // lista dinâmica de áreas
       const [printStamp, setPrintStamp] = useState(0);
+
+      const generalChecklist = [
+        'Documentação societária validada',
+        'Beneficiário final identificado',
+        'Background de mídia concluído',
+        'Listas restritivas consultadas',
+        'Processos judiciais levantados',
+        'Parecer preliminar revisado'
+      ];
+
+      const peopleForPep = [
+        ...((formData.estrutura && formData.estrutura.socios) || []).map(s => ({ id: `S-${s.id}`, label: `${s.name} (Sócio)` })),
+        ...((formData.estrutura && formData.estrutura.dirigentes) || []).map(d => ({ id: `D-${d.id}`, label: `${d.name} (Administrador)` }))
+      ];
+
+      const pepLinkedNames = (formData.pepPersonIds || []).map(pid => {
+        const person = peopleForPep.find(p => p.id === pid);
+        return person ? person.label : pid;
+      });
 
       // compact details toggle for relationship alerts
       const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
@@ -769,9 +741,9 @@
       const addLawsuit = (l) => setFormData(prev => ({ ...prev, lawsuits: [...(prev.lawsuits||[]), { ...l, id: uid() }] }));
       const removeLawsuit = (id) => setFormData(prev => ({ ...prev, lawsuits: (prev.lawsuits||[]).filter(x=>x.id!==id) }));
       const addSocio = (socio) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), socios: [...(prev.estrutura?.socios||[]), { id: uid(), ...socio }] } }));
-      const removeSocio = (id) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), socios: (prev.estrutura?.socios||[]).filter(s => s.id !== id) } }));
+      const removeSocio = (id) => setFormData(prev => ({ ...prev, pepPersonIds: (prev.pepPersonIds || []).filter(pid => pid !== `S-${id}`), estrutura: { ...(prev.estrutura||{}), socios: (prev.estrutura?.socios||[]).filter(s => s.id !== id) } }));
       const addDir = (dir) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), dirigentes: [...(prev.estrutura?.dirigentes||[]), { id: uid(), ...dir }] } }));
-      const removeDir = (id) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), dirigentes: (prev.estrutura?.dirigentes||[]).filter(d => d.id !== id) } }));
+      const removeDir = (id) => setFormData(prev => ({ ...prev, pepPersonIds: (prev.pepPersonIds || []).filter(pid => pid !== `D-${id}`), estrutura: { ...(prev.estrutura||{}), dirigentes: (prev.estrutura?.dirigentes||[]).filter(d => d.id !== id) } }));
 
       const saveAnalysisToHistory = async () => {
         const entry = {
@@ -884,9 +856,14 @@
                   <tr><td>Documento</td><td>{formData.document || '-'}</td></tr>
                   <tr><td>Capital Social</td><td>{formData.capitalSocial || '-'}</td></tr>
                   <tr><td>Filiais</td><td>{formData.filialCount || 0}</td></tr>
+                  <tr><td>Data de solicitação</td><td>{formData.requestDate || '-'}</td></tr>
+                  <tr><td>Data de resposta</td><td>{formData.responseDate || '-'}</td></tr>
+                  <tr><td>Solicitante</td><td>{formData.requestedBy || '-'}</td></tr>
                   <tr><td>Objetivo</td><td>{formData.objetivoLabel || '-'}</td></tr>
+                  <tr><td>Checklist</td><td>{(formData.checkItems || []).length ? formData.checkItems.join('; ') : '-'}</td></tr>
+                  <tr><td>Sócio estrangeiro / off-shore</td><td>{formData.hasForeignPartner ? 'Sim' : 'Não'}</td></tr>
                   <tr><td>Societário</td><td>{formData.complexity}</td></tr>
-                  <tr><td>PEP</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}</td></tr>
+                  <tr><td>PEP</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td></tr>
                   <tr><td>Estado</td><td>{formData.state}</td></tr>
                   <tr><td>Área de Negócio</td><td>{formData.areaName ? formData.areaName + ' — ' + (formData.areaCategoria || '-') : '-'}</td></tr>
                 </tbody>
@@ -976,7 +953,7 @@
               <tbody>
                 { breakdown.products.map((p,i) => <tr key={'rp'+i}><td>{p.name}</td><td>Produto</td><td>Risco {p.risk}</td><td>{p.contrib}</td></tr>) }
                 <tr><td>Quadro societário</td><td>Estrutura</td><td>{formData.complexity}</td><td>{breakdown.quadro}</td></tr>
-                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}</td><td>{breakdown.pep}</td></tr>
+                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td><td>{breakdown.pep}</td></tr>
                 <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.media}</td></tr>
                 <tr><td>Sanções</td><td>Listas</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.sanctions}</td></tr>
                 <tr><td>Área de Negócio</td><td>Categoria</td><td>{formData.areaCategoria || '-'}</td><td>{breakdown.area || 0}</td></tr>
@@ -1027,8 +1004,9 @@
                     <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="user"/> Dados Cadastrais</h3>
                     <button onClick={() => { setFormData({
                       personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira',
-                      capitalSocial:'', filialCount:0, objetivo:'cliente', objetivoLabel:'Cliente',
-                      products: [], complexity: 'Simples', pepType: 'Nao', pepRole: '',
+                      capitalSocial:'', filialCount:0, requestDate:'', responseDate:'', requestedBy:'', objetivo:'cliente', objetivoLabel:'Cliente',
+                      checkItems: [], hasForeignPartner:false, pepType: 'Nao', pepRole: '', pepPersonIds: [],
+                      products: [], complexity: 'Simples',
                       negativeMedia: false, mediaLinks: [], sanctionsList:false, sanctionLinks: [],
                       lawsuits: [], estrutura: { socios: [], dirigentes: [] }, parecerFinal: '', analystName: '', reviewerName: '',
                       areaName:'', areaCategoria:''
@@ -1052,6 +1030,19 @@
                     <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Quantidade de Filiais</label>
                     <input type="number" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white" value={formData.filialCount} onChange={e=>setFormData({...formData, filialCount: Number(e.target.value)})} />
                   </div>
+
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Data de Solicitação da Análise</label>
+                    <input type="date" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white" value={formData.requestDate || ''} onChange={e=>setFormData({...formData, requestDate:e.target.value})} />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Data de Resposta da Análise</label>
+                    <input type="date" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white" value={formData.responseDate || ''} onChange={e=>setFormData({...formData, responseDate:e.target.value})} />
+                  </div>
+
+                  <Field label="Quem Solicitou a Análise" value={formData.requestedBy || ''} onChange={v=>setFormData({...formData, requestedBy:v})} placeholder="Nome do solicitante"/>
+
                   <div>
                     <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Objetivo do relacionamento</label>
                     <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white font-bold text-slate-700" value={formData.objetivo} onChange={e=>setFormData({...formData, objetivo: e.target.value, objetivoLabel: e.target.options[e.target.selectedIndex].text})}>
@@ -1060,6 +1051,31 @@
                       <option value="prestador">Prestador de Serviços</option>
                       <option value="recrutador">Profissional em Recrutamento</option>
                     </select>
+                  </div>
+
+                  <div className="col-span-full p-5 border-2 border-slate-100 rounded-3xl bg-slate-50">
+                    <div className="text-[10px] font-black uppercase text-blue-600 tracking-widest mb-3">Checklist de Diligência</div>
+                    <div className="grid md:grid-cols-2 gap-2">
+                      {generalChecklist.map(item => (
+                        <label key={item} className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={(formData.checkItems || []).includes(item)}
+                            onChange={e=>setFormData(prev=>({
+                              ...prev,
+                              checkItems: e.target.checked
+                                ? [...(prev.checkItems || []), item]
+                                : (prev.checkItems || []).filter(x => x !== item)
+                            }))}
+                          />
+                          {item}
+                        </label>
+                      ))}
+                    </div>
+                    <label className="mt-4 flex items-center gap-2 text-xs font-black text-slate-800">
+                      <input type="checkbox" checked={!!formData.hasForeignPartner} onChange={e=>setFormData(prev=>({...prev, hasForeignPartner: e.target.checked}))} />
+                      Existe sócio estrangeiro ou estrutura off-shore
+                    </label>
                   </div>
 
                   {/* Área de Negócio: preenchida dinamicamente a partir do DB 'areas' (requisito) */}
@@ -1109,15 +1125,43 @@
                         <div className="font-black text-slate-800 text-sm">{opt.l}</div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{opt.d}</div>
                       </button>
-                    ))} 
+                    ))}
                   </div>
 
                   <div className="col-span-full border-b pb-4 mt-8">
                     <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="shield"/> PEP</h3>
                   </div>
 
-                  <Field label="Enquadramento PEP" type="select" value={formData.pepType} onChange={v=>setFormData({...formData, pepType:v})} options={[{v:'Nao', l:'Não é PEP'},{v:'Direto', l:'PEP Direto'},{v:'Indireto', l:'Relacionado/Familiar'}]}/>
-                  {formData.pepType !== 'Nao' && <div className="col-span-2"><Field label="Cargo / Função" value={formData.pepRole} onChange={v=>setFormData({...formData, pepRole:v})}/></div>}
+                  <Field label="Enquadramento PEP" type="select" value={formData.pepType} onChange={v=>setFormData({...formData, pepType:v, pepPersonIds: v === 'Nao' ? [] : formData.pepPersonIds})} options={[{v:'Nao', l:'Não é PEP'},{v:'Direto', l:'PEP Direto'},{v:'Indireto', l:'Relacionado/Familiar'}]}/>
+                  {formData.pepType !== 'Nao' && (
+                    <>
+                      <div className="col-span-2"><Field label="Cargo / Função PEP" value={formData.pepRole} onChange={v=>setFormData({...formData, pepRole:v})}/></div>
+                      <div className="col-span-full p-4 border rounded-2xl bg-blue-50/40">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-blue-700 mb-2">Vincule os sócios/administradores que são PEP</div>
+                        {peopleForPep.length === 0 ? (
+                          <div className="muted">Adicione sócios ou administradores para habilitar a vinculação.</div>
+                        ) : (
+                          <div className="grid md:grid-cols-2 gap-2">
+                            {peopleForPep.map(person => (
+                              <label key={person.id} className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={(formData.pepPersonIds || []).includes(person.id)}
+                                  onChange={e=>setFormData(prev=>({
+                                    ...prev,
+                                    pepPersonIds: e.target.checked
+                                      ? [...(prev.pepPersonIds || []), person.id]
+                                      : (prev.pepPersonIds || []).filter(pid => pid !== person.id)
+                                  }))}
+                                />
+                                {person.label}
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
 
                   <div className="col-span-full border-t pt-6 mt-6">
                     <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest mb-4">Estrutura Societária — Sócios & Dirigentes</h3>
@@ -1257,7 +1301,7 @@
                     <button onClick={handlePrint} className="bg-slate-900 text-white px-12 py-5 rounded-3xl font-black uppercase tracking-widest flex items-center gap-3 shadow-2xl hover:bg-black hover:-translate-y-1 transition-all">
                       <Icon name="printer" className="w-6 h-6"/> Emitir Relatório Oficial
                     </button>
-                    <button onClick={() => { setFormData(prev=>({...prev, products:[], mediaLinks:[], sanctionLinks:[], lawsuits:[], estrutura: { socios: [], dirigentes: [] }, parecerFinal: '', analystName: '', reviewerName: '' })); setStep(0); }} className="bg-white border-2 border-slate-200 text-slate-500 px-12 py-5 rounded-3xl font-black uppercase tracking-widest hover:bg-slate-50 transition-all">
+                    <button onClick={() => { setFormData(prev=>({...prev, products:[], mediaLinks:[], sanctionLinks:[], lawsuits:[], estrutura: { socios: [], dirigentes: [] }, checkItems: [], hasForeignPartner:false, pepType:'Nao', pepRole:'', pepPersonIds: [], requestDate:'', responseDate:'', requestedBy:'', parecerFinal: '', analystName: '', reviewerName: '' })); setStep(0); }} className="bg-white border-2 border-slate-200 text-slate-500 px-12 py-5 rounded-3xl font-black uppercase tracking-widest hover:bg-slate-50 transition-all">
                       <Icon name="refresh-cw" className="w-6 h-6"/> Nova Análise
                     </button>
                     <button onClick={saveAnalysisToHistory} className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black shadow-xl">Salvar Análise</button>
@@ -1282,7 +1326,7 @@
                               <tbody>
                                 {breakdown.products.map((p,idx)=>(<tr key={idx}><td>{p.name}</td><td>Produto ({p.category})</td><td>Risco: {p.risk} | Carga: {p.load}</td><td>{p.contrib}</td></tr>))}
                                 <tr><td>Quadro societário</td><td>Estrutura</td><td>{formData.complexity}</td><td>{breakdown.quadro}</td></tr>
-                                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}</td><td>{breakdown.pep}</td></tr>
+                                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td><td>{breakdown.pep}</td></tr>
                                 <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.media}</td></tr>
                                 <tr><td>Sanções</td><td>Listas</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.sanctions}</td></tr>
                                 <tr><td>Área de Negócio</td><td>Categoria</td><td>{formData.areaCategoria || '-'}</td><td>{breakdown.area || 0}</td></tr>
