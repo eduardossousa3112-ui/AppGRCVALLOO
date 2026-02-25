@@ -1,0 +1,1483 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Valloo | GRC Risk Engine V15.6 — Integrado</title>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/dexie@latest/dist/dexie.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #1e293b; margin:0; }
+        a { color: inherit; text-decoration: none; }
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; padding: 0; }
+            .report-page { padding: 40px; border: none; }
+            button { display: none; }
+        }
+        .print-only { display: none; }
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #f1f5f9; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        .rounded-2xl { border-radius: 1rem; }
+        .rounded-3xl { border-radius: 1.5rem; }
+        .shadow-2xl { box-shadow: 0 25px 50px rgba(2,6,23,0.12); }
+        .shadow-xl { box-shadow: 0 12px 30px rgba(2,6,23,0.08); }
+
+        input, select, textarea { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+        .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .report-table { width:100%; border-collapse: collapse; margin-top:12px; }
+        .report-table th, .report-table td { border:1px solid #e6eef8; padding:8px; text-align:left; font-size:13px; }
+        .report-table th { background:#f1f5f9; font-weight:700; font-size:12px; }
+
+        .muted { color:#64748b; font-size:13px; }
+        .button-ghost{background:transparent;border:1px solid #eef2f7;padding:8px 12px;border-radius:10px}
+        .button-primary{background:#002060;color:#fff;padding:8px 12px;border-radius:10px;border:none}
+
+        /* compact alert */
+        .compact-alert { background:#fff8e6; border:1px solid #f5c06b; padding:10px 12px; border-radius:10px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+        .compact-pill { background:#fef3c7; border:1px solid #f59e0b; padding:6px 10px; border-radius:999px; font-weight:800; font-size:13px; color:#92400e; }
+        .compact-details { margin-top:8px; padding:10px; background:#fff; border-radius:8px; border:1px solid #eef2f7; max-height:220px; overflow:auto; }
+        .compact-details ul { margin:0; padding-left:18px; font-size:13px; color:#0f172a; }
+        .compact-details li { margin-bottom:6px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // --- CONFIGURAÇÃO DA LOGO (MANTIDA) ---
+    const APP_LOGO_BASE64 = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSIjMDAyMDYwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzAwMjA2MCIgcng9IjIwIiAvPjx0ZXh0IHg9IjUwIiB5PSI3MCIgZm9udC1zaXplPSI2MCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0id2hpdGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlY8L3RleHQ+PC9zdmc+";
+
+    /* === Dexie DB setup (adicionada store 'areas') === */
+    const db = new Dexie("VallooGRCDatabaseV15_6");
+    db.version(1).stores({
+      analyses: "++id, name, document, score, level, date",
+      crimes: "++id, nome, tipo, risco",
+      factions: "++id, nome, regiao, perigo",
+      manual: "id, content",
+      settings: "id",
+      products: "id, name, category, risk",
+      estrutura: "id",
+      areas: "++id, name, risk" // nova store para Áreas de Negócio
+    });
+
+    const uid = () => 'id' + Math.floor(Math.random() * 1e9);
+    const nowISO = () => new Date().toISOString();
+
+    async function seedIfEmpty() {
+      // produtos (mantido)
+      const pcount = await db.products.count();
+      if (pcount === 0) {
+        const defaultProducts = [
+          { id: 'v_alim', name: 'Valloo Alimentação', category: 'Benefícios', risk: 'Baixo' },
+          { id: 'v_ref', name: 'Valloo Refeição', category: 'Benefícios', risk: 'Baixo' },
+          { id: 'v_basic', name: 'Conta Digital - Basic', category: 'Conta Digital', risk: 'Baixo' },
+          { id: 'v_classic', name: 'Conta Digital - Classic', category: 'Conta Digital', risk: 'Médio' },
+          { id: 'v_exclusive', name: 'Conta Digital - Exclusive', category: 'Conta Digital', risk: 'Médio' },
+          { id: 'v_connect', name: 'Conta Digital - Connect', category: 'Conta Digital', risk: 'Médio' },
+          { id: 'v_prem_cash', name: 'Premiação (Cash/Saque)', category: 'Campanha', risk: 'Alto' },
+          { id: 'v_corp', name: 'Cartão Corporativo', category: 'Cartão Corporativo', risk: 'Médio' },
+          { id: 'v_white', name: 'White Label - Conta', category: 'White Label', risk: 'Alto' }
+        ];
+        await db.products.bulkAdd(defaultProducts);
+      }
+
+      // crimes (mantido)
+      const ccount = await db.crimes.count();
+      if (ccount === 0) {
+        const sample = [
+          { nome: 'Lavagem de Dinheiro', tipo: 'Financeiro', risco: 'Alto' },
+          { nome: 'Estelionato', tipo: 'Patrimonial', risco: 'Médio' },
+          { nome: 'Tráfico de Drogas', tipo: 'Criminal', risco: 'Inadmissível' },
+          { nome: 'Corrupção (Ativa/Passiva)', tipo: 'Criminal', risco: 'Alto' },
+          { nome: 'Organização Criminosa', tipo: 'Criminal', risco: 'Alto' }
+        ];
+        await db.crimes.bulkAdd(sample);
+      }
+
+      // facções (mantido)
+      const fcount = await db.factions.count();
+      if (fcount === 0) {
+        await db.factions.bulkAdd([
+          { nome: 'Primeiro Comando da Capital (PCC)', regiao:'Nacional', perigo:'Alta' },
+          { nome: 'Comando Vermelho (CV)', regiao:'Nacional', perigo:'Alta' }
+        ]);
+      }
+
+      // settings (mantido)
+      const sc = await db.settings.get('default');
+      if(!sc) {
+        const defaultSettings = {
+          id: 'default',
+          puntos: { 
+            prod_baixo:2, prod_medio:7, prod_alto:15, 
+            crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
+            quadro_moderada:10, quadro_complexa:25, pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
+            area_baixo:3, area_medio:8, area_alto:18
+          },
+          multipliers: { pepFinance:1.15, estrangeiro:1.12, multiplosProcessos:1.08 },
+          categoryScore: { low:8, medium:25, high:60 },
+          thresholds: { baixo:20, medio:45, alto:75, critico:90 }
+        };
+        await db.settings.put(defaultSettings);
+      }
+
+      // manual (mantido)
+      const m = await db.manual.get('main');
+      if(!m) {
+        await db.manual.put({ id: 'main', content: '# Manual Valloo\n\nUse as abas para navegar. Este manual foi gerado localmente.'});
+      }
+
+      // estrutura (mantido)
+      const estruct = await db.estrutura.count();
+      if(!estruct) {
+        await db.estrutura.add({ id:'default', socios:[], dirigentes:[] });
+      }
+
+      // areas: seed default list so the app never starts empty (requerido)
+      const acount = await db.areas.count();
+      if(acount === 0) {
+        const defaultAreas = [
+          { name: 'Atacado', risk: 'Baixo' },
+          { name: 'Consultoria', risk: 'Baixo' },
+          { name: 'Hotelaria', risk: 'Baixo' },
+          { name: 'Imobiliária', risk: 'Baixo' },
+          { name: 'Serviços TI', risk: 'Baixo' },
+          { name: 'Construtora', risk: 'Médio' },
+          { name: 'Indústria', risk: 'Médio' },
+          { name: 'Saúde', risk: 'Médio' },
+          { name: 'Sem fins lucrativos', risk: 'Médio' },
+          { name: 'Posto de Gasolina', risk: 'Alto' },
+          { name: 'Joias', risk: 'Alto' },
+          { name: 'Câmbio', risk: 'Alto' },
+          { name: 'Obras Públicas', risk: 'Alto' },
+          { name: 'Comércio Exterior', risk: 'Alto' },
+          { name: 'Jogos de azar', risk: 'Inadmissível' },
+          { name: 'Criptoativos', risk: 'Inadmissível' }
+        ];
+        await db.areas.bulkAdd(defaultAreas);
+      }
+    }
+
+    function sanitizeLink(s) {
+      if(!s) return null;
+      try { return (new URL(s)).href; }
+      catch(e) {
+        try { return (new URL('http://' + s)).href; }
+        catch(e2) { return String(s).trim(); }
+      }
+    }
+
+    const Icon = ({ name, className="w-4 h-4" }) => {
+      useEffect(()=> { if(window.lucide) window.lucide.createIcons(); }, [name]);
+      return <i data-lucide={name} className={className}></i>;
+    };
+
+    // calcula score (mantido, usa form.areaCategoria para lógica)
+    function calculateRiskAndBreakdown(form, productsList, crimesList, settings) {
+      if (form.areaCategoria === 'Inadmissível') {
+        const breakdown = { products:[], quadro:0, pep:0, media:0, sanctions:0, processos:[], totalBeforeMultipliers:100, area:0 };
+        return { score: 100, level: "Risco Inadmissível", isCritical: true, breakdown };
+      }
+
+      let score = 0;
+      let isCritical = false;
+      const breakdown = { products:[], quadro:0, pep:0, media:0, sanctions:0, processos:[], area:0, totalBeforeMultipliers:0 };
+
+      const pts = (settings && settings.puntos) ? settings.puntos : {
+        prod_baixo:2, prod_medio:7, prod_alto:15, 
+        crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
+        quadro_moderada:10, quadro_complexa:25,
+        pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
+        area_baixo:3, area_medio:8, area_alto:18
+      };
+
+      (form.products || []).forEach(selItem => {
+        const prodDef = productsList.find(p => p.id === selItem.id);
+        if(!prodDef) return;
+
+        let contrib = 0;
+        if (prodDef.risk === 'Alto') contrib = pts.prod_alto;
+        else if (prodDef.risk === 'Médio') contrib = pts.prod_medio;
+        else contrib = pts.prod_baixo;
+
+        score += contrib;
+        breakdown.products.push({ id: selItem.id, name: prodDef.name, category: prodDef.category, risk: prodDef.risk, load: selItem.load, periodicity: selItem.periodicity, contrib });
+      });
+
+      if (form.complexity === 'Moderada') { score += pts.quadro_moderada; breakdown.quadro = pts.quadro_moderada; }
+      if (form.complexity === 'Complexa') { score += pts.quadro_complexa; breakdown.quadro = pts.quadro_complexa; }
+
+      if (form.pepType !== 'Nao') { score += pts.pep; breakdown.pep = pts.pep; }
+
+      if (form.negativeMedia) {
+        const n = (form.mediaLinks || []).length || 1;
+        const add = pts.midia * n;
+        score += add;
+        breakdown.media = add;
+      }
+      if (form.sanctionsList) {
+        const n = (form.sanctionLinks || []).length || 1;
+        const add = pts.sancao * n;
+        score += add;
+        breakdown.sanctions = add;
+      }
+
+      (form.lawsuits || []).forEach(proc => {
+        let procContrib = 0;
+        const papel = (proc.analyzedRole || 'Passivo');
+
+        if (papel === 'Passivo') {
+          if ((proc.type || '').toLowerCase().includes('criminal')) {
+            const crimeObj = crimesList.find(c => c.nome === proc.crimeNome);
+            let baseValue = pts.processo_criminal;
+            if(crimeObj) {
+               if(crimeObj.risco === 'Inadmissível') { isCritical = true; baseValue = pts.crime_inadmissivel; }
+               else if(crimeObj.risco === 'Alto') baseValue = pts.crime_alto;
+               else if(crimeObj.risco === 'Médio') baseValue = pts.crime_medio;
+               else baseValue = pts.crime_baixo;
+            }
+            if (proc.status === 'Arquivado') {
+                procContrib = baseValue * 0.10; // arquivado reduz bastante (10% do base) — regra mantida
+            } else {
+                procContrib = baseValue;
+            }
+          } else {
+            procContrib = pts.processo_outro;
+          }
+          score += procContrib;
+        } else {
+          procContrib = 0;
+        }
+
+        breakdown.processos.push({ ...proc, contrib: procContrib });
+      });
+
+      if (form.areaCategoria === 'Baixo') { score += pts.area_baixo; breakdown.area = pts.area_baixo; }
+      else if (form.areaCategoria === 'Médio') { score += pts.area_medio; breakdown.area = pts.area_medio; }
+      else if (form.areaCategoria === 'Alto') { score += pts.area_alto; breakdown.area = pts.area_alto; }
+
+      const thresholds = (settings && settings.thresholds) ? settings.thresholds : { baixo:20, medio:45, alto:75, critico:90 };
+      let level = "Baixo";
+      if (isCritical || score >= thresholds.alto) level = "CRÍTICO";
+      else if (score >= thresholds.medio) level = "Alto";
+      else if (score >= thresholds.baixo) level = "Médio";
+
+      breakdown.totalBeforeMultipliers = score;
+      return { score: Math.min(score,100), level, isCritical, breakdown };
+    }
+
+    const Field = ({ label, type="text", value, onChange, options, placeholder }) => (
+      <div className="space-y-1.5">
+        <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">{label}</label>
+        { type === 'select' ? (
+          <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white font-bold text-slate-700 outline-none focus:border-blue-500 transition-all" value={value} onChange={e=>onChange(e.target.value)}>
+            { options.map(o => <option key={o.v} value={o.v}>{o.l}</option>) }
+          </select>
+        ) : (
+          <input className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white font-bold text-slate-700 outline-none focus:border-blue-500 transition-all" value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder} />
+        )}
+      </div>
+    );
+
+    const MediaSanctionManager = ({ title, active, onToggle, items, onUpdate }) => {
+      const [url, setUrl] = useState('');
+      return (
+        <div className={`p-6 rounded-3xl border-2 transition-all ${active ? 'bg-white/5 border-white/20' : 'bg-transparent border-white/5 opacity-30'}`}>
+          <div className="flex justify-between items-center mb-4">
+            <span className="text-[10px] font-black uppercase tracking-widest">{title}</span>
+            <input type="checkbox" checked={active} onChange={e=>onToggle(e.target.checked)} className="accent-blue-500 w-5 h-5 cursor-pointer"/>
+          </div>
+          {active && (
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <input className="flex-1 bg-white/10 border border-white/10 rounded-xl px-4 py-2 text-xs" placeholder="Link..." value={url} onChange={e=>setUrl(e.target.value)}/>
+                <button onClick={()=>{
+                  if(!url) return;
+                  const s = sanitizeLink(url);
+                  onUpdate([...(items||[]), s]);
+                  setUrl('');
+                }} className="bg-blue-600 p-2 rounded-xl"><Icon name="plus" /></button>
+              </div>
+              <div className="space-y-1 max-h-20 overflow-y-auto custom-scroll">
+                {(items||[]).map((it, idx) => (
+                  <div key={idx} className="bg-white/5 p-2 rounded flex justify-between items-center text-[10px]">
+                    <span className="truncate pr-4">{it}</span>
+                    <button onClick={()=>onUpdate(items.filter((_,i)=>i!==idx))} className="text-red-400"><Icon name="x" className="w-3 h-3" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const LawsuitManager = ({ onAdd, items, onRemove, crimes }) => {
+      const [l, setL] = useState({ description:'', subject:'', activeParty:'', passiveParty:'', status:'Em andamento', analyzedRole:'Passivo', type:'Civil', crimeNome:'', crimeRisco:'' });
+      return (
+        <div className="space-y-6">
+          <div className="bg-white p-8 rounded-[2.5rem] border-2 border-slate-100 shadow-xl space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <label className="text-[9px] font-black uppercase text-slate-400 mb-1 block">Processo nº</label>
+                <input className="w-full border-2 border-slate-50 p-3 rounded-xl text-xs font-bold bg-slate-50" placeholder="0000000-00..." value={l.description} onChange={e=>setL({...l, description:e.target.value})}/>
+              </div>
+              <div className="col-span-2">
+                <label className="text-[9px] font-black uppercase text-slate-400 mb-1 block">Assunto</label>
+                <input className="w-full border-2 border-slate-50 p-3 rounded-xl text-xs font-bold bg-slate-50" placeholder="Descrição do caso..." value={l.subject} onChange={e=>setL({...l, subject:e.target.value})}/>
+              </div>
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400 mb-1 block">Polo Ativo</label>
+                <input className="w-full border-2 border-slate-50 p-3 rounded-xl text-xs font-bold bg-slate-50" placeholder="Autor..." value={l.activeParty} onChange={e=>setL({...l, activeParty:e.target.value})}/>
+              </div>
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400 mb-1 block">Polo Passivo</label>
+                <input className="w-full border-2 border-slate-50 p-3 rounded-xl text-xs font-bold bg-slate-50" placeholder="Réu..." value={l.passiveParty} onChange={e=>setL({...l, passiveParty:e.target.value})}/>
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400 mb-1 block">Tipo</label>
+                <select className="w-full border-2 border-slate-50 p-3 rounded-xl text-xs font-bold bg-slate-50" value={l.type} onChange={e=>setL({...l, type:e.target.value})}>
+                  <option>Civil</option><option>Criminal</option><option>Trabalhista</option><option>Administrativo</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[9px] font-black uppercase text-slate-400 mb-1 block">Status</label>
+                <select className="w-full border-2 border-slate-50 p-3 rounded-xl text-xs font-bold bg-slate-50" value={l.status} onChange={e=>setL({...l, status:e.target.value})}>
+                  <option>Em andamento</option>
+                  <option>Condenado em 1ª instância</option>
+                  <option>Condenado em 2ª Instância</option>
+                  <option>Trânsito em julgado</option>
+                  <option>Arquivado</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[9px] font-black uppercase text-blue-400 mb-1 block">O Analisado é:</label>
+                <select className="w-full border-2 border-blue-100 p-3 rounded-xl text-xs font-black bg-blue-50 text-blue-600" value={l.analyzedRole} onChange={e=>setL({...l, analyzedRole:e.target.value})}>
+                  <option value="Passivo">POLO PASSIVO</option><option value="Ativo">POLO ATIVO</option>
+                </select>
+              </div>
+            </div>
+
+            {l.type === 'Criminal' && (
+              <select className="w-full border-2 border-red-100 p-3 rounded-xl text-xs font-bold bg-red-50 text-red-600" onChange={e=>{
+                const c = crimes.find(x=>x.nome === e.target.value);
+                if(c) setL({...l, crimeNome: c.nome, crimeRisco: c.risco});
+              }} value={l.crimeNome}>
+                <option value="">Selecione o Delito na Base...</option>
+                { crimes.map(c => <option key={c.id} value={c.nome}>{c.nome} ({c.risco})</option>) }
+              </select>
+            )}
+
+            <button onClick={()=>{ if(!l.description) { alert('Processo nº é obrigatório'); return; } onAdd(l); setL({ description:'', subject:'', activeParty:'', passiveParty:'', status:'Em andamento', analyzedRole:'Passivo', type:'Civil', crimeNome:'', crimeRisco:'' }); }} className="w-full bg-slate-900 text-white p-4 rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl">Adicionar Processo</button>
+          </div>
+
+          <div className="space-y-3 max-h-60 overflow-y-auto custom-scroll pr-2">
+            {items.map(item => (
+              <div key={item.id} className="p-4 bg-white border-2 border-slate-100 rounded-2xl flex justify-between items-center group">
+                <div>
+                  <div className="font-black text-xs text-slate-900">{item.description}</div>
+                  <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{item.subject}</div>
+                  <div className="flex gap-2 mt-2">
+                    <span className={`text-[8px] font-black px-2 py-0.5 rounded text-white ${item.analyzedRole === 'Passivo' ? 'bg-red-600' : 'bg-blue-600'}`}>{item.analyzedRole}</span>
+                    <span className="text-[8px] font-black px-2 py-0.5 rounded bg-slate-100 uppercase">{item.status}</span>
+                  </div>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'flex-end'}}>
+                  <div className="text-[10px] muted">{item.crimeNome || ''}</div>
+                  <button onClick={()=>onRemove(item.id)} className="text-slate-200 group-hover:text-red-500"><Icon name="trash-2" className="w-4 h-4" /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // Administrative panel now includes Areas management
+    function AdminPanel({ refreshAll }) {
+      const [settings, setSettings] = useState(null);
+      const [products, setProducts] = useState([]);
+      const [crimes, setCrimes] = useState([]);
+      const [factions, setFactions] = useState([]);
+      const [areas, setAreas] = useState([]);
+      const [prodEdit, setProdEdit] = useState({ id:'', name:'', category:'', risk:'Baixo' });
+      const [crimeEdit, setCrimeEdit] = useState({ id:'', nome:'', tipo:'', risco:'Médio' });
+      const [factionEdit, setFactionEdit] = useState({ id:'', nome:'', regiao:'', perigo:'Média' });
+      const [areaEdit, setAreaEdit] = useState({ id:'', name:'', risk:'Baixo' });
+
+      useEffect(()=>{ (async ()=>{
+        setSettings(await db.settings.get('default'));
+        setProducts(await db.products.toArray());
+        setCrimes(await db.crimes.toArray());
+        setFactions(await db.factions.toArray());
+        setAreas(await db.areas.toArray());
+      })(); }, []);
+
+      const saveSettings = async (newSettings) => {
+        await db.settings.put({ ...newSettings, id:'default' });
+        setSettings(newSettings);
+        alert('Configurações salvas localmente.');
+        refreshAll && refreshAll();
+      };
+
+      const clearHistory = async () => {
+        if(!confirm('Apagar todo o histórico local?')) return;
+        await db.analyses.clear();
+        alert('Histórico apagado.');
+        refreshAll && refreshAll();
+      };
+
+      const saveProduct = async () => {
+        if(!prodEdit.name) return alert('Nome obrigatório');
+        if(prodEdit.id) {
+          await db.products.put(prodEdit);
+        } else {
+          await db.products.add({ ...prodEdit, id: uid() });
+        }
+        setProducts(await db.products.toArray());
+        setProdEdit({ id:'', name:'', category:'', risk:'Baixo' });
+        refreshAll && refreshAll();
+      };
+      const deleteProduct = async (id) => { if(!confirm('Remover produto?')) return; await db.products.delete(id); setProducts(await db.products.toArray()); refreshAll && refreshAll(); };
+
+      const saveCrime = async () => {
+        if(!crimeEdit.nome) return alert('Nome do crime obrigatório');
+        if(crimeEdit.id) { await db.crimes.put(crimeEdit); }
+        else { await db.crimes.add({ ...crimeEdit, id: uid() }); }
+        setCrimes(await db.crimes.toArray()); setCrimeEdit({ id:'', nome:'', tipo:'', risco:'Médio' });
+        refreshAll && refreshAll();
+      };
+      const deleteCrime = async (id) => { if(!confirm('Remover crime?')) return; await db.crimes.delete(id); setCrimes(await db.crimes.toArray()); refreshAll && refreshAll(); };
+
+      const saveFaction = async () => {
+        if(!factionEdit.nome) return alert('Nome obrigatório');
+        if(factionEdit.id) { await db.factions.put(factionEdit); }
+        else { await db.factions.add({ ...factionEdit, id: uid() }); }
+        setFactions(await db.factions.toArray()); setFactionEdit({ id:'', nome:'', regiao:'', perigo:'Média' });
+        refreshAll && refreshAll();
+      };
+      const deleteFaction = async (id) => { if(!confirm('Remover facção?')) return; await db.factions.delete(id); setFactions(await db.factions.toArray()); refreshAll && refreshAll(); };
+
+      // Areas management
+      const saveArea = async () => {
+        if(!areaEdit.name) return alert('Nome da área obrigatório');
+        const normalized = areaEdit.name.trim();
+        if(areaEdit.id) {
+          await db.areas.put({ ...areaEdit, name: normalized });
+        } else {
+          await db.areas.add({ name: normalized, risk: areaEdit.risk });
+        }
+        setAreas(await db.areas.toArray());
+        setAreaEdit({ id:'', name:'', risk:'Baixo' });
+        refreshAll && refreshAll();
+      };
+      const deleteArea = async (id) => {
+        if(!confirm('Remover área de negócio?')) return;
+        await db.areas.delete(id);
+        setAreas(await db.areas.toArray());
+        refreshAll && refreshAll();
+      };
+
+      return (
+        <div className="max-w-6xl mx-auto pb-20">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden p-10">
+            <div className="flex justify-between items-center mb-6">
+              <div>
+                <h2 className="text-xl font-black">Painel Administrativo — Configurações Avançadas</h2>
+                <div className="muted">Edite pontuações, multiplicadores, category_score e limites. Tudo salvo localmente.</div>
+              </div>
+              <div className="flex gap-3">
+                <button className="button-ghost" onClick={clearHistory}>Limpar Histórico</button>
+                <button className="button-primary" onClick={async ()=>{ setSettings(await db.settings.get('default')); alert('Recarregado'); }}>Recarregar</button>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="p-4 border rounded-2xl bg-blue-50/50">
+                <h4 className="font-black mb-2 text-blue-800">Pesos: Produtos</h4>
+                {settings ? (
+                  <div className="space-y-2">
+                    {['prod_baixo','prod_medio','prod_alto'].map(k => (
+                      <div key={k} className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-bold uppercase">{k.replace('prod_','')}</div>
+                        <input type="number" value={settings.puntos[k]} onChange={e=>setSettings(s => ({...s, puntos:{...s.puntos, [k]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" />
+                      </div>
+                    ))}
+                  </div>
+                ) : <div>Carregando...</div>}
+              </div>
+
+              <div className="p-4 border rounded-2xl bg-red-50/50">
+                <h4 className="font-black mb-2 text-red-800">Pesos: Crimes/Processos</h4>
+                {settings ? (
+                  <div className="space-y-2">
+                    {['crime_baixo','crime_medio','crime_alto','crime_inadmissivel'].map(k => (
+                      <div key={k} className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-bold uppercase">{k.replace('crime_','')}</div>
+                        <input type="number" value={settings.puntos[k] || 0} onChange={e=>setSettings(s => ({...s, puntos:{...s.puntos, [k]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" />
+                      </div>
+                    ))}
+                  </div>
+                ) : <div>Carregando...</div>}
+              </div>
+
+              <div className="p-4 border rounded-2xl bg-green-50/50">
+                <h4 className="font-black mb-2 text-green-800">Pesos: Área de Negócio</h4>
+                {settings ? (
+                  <div className="space-y-2">
+                    {['area_baixo','area_medio','area_alto'].map(k => (
+                      <div key={k} className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-bold uppercase">{k.replace('area_','')}</div>
+                        <input type="number" value={settings.puntos[k] || 0} onChange={e=>setSettings(s => ({...s, puntos:{...s.puntos, [k]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" />
+                      </div>
+                    ))}
+                  </div>
+                ) : <div>Carregando...</div>}
+              </div>
+
+              <div className="p-4 border rounded-2xl md:col-span-3">
+                <h4 className="font-black mb-2">Outros Pesos & Limites (Thresholds)</h4>
+                {settings ? (
+                  <div className="space-y-2">
+                    {Object.keys(settings.puntos || {}).filter(k=> !k.startsWith('prod_') && !k.startsWith('crime_') && !k.startsWith('area_')).map(k => (
+                      <div key={k} className="flex items-center justify-between gap-2">
+                        <div className="text-xs uppercase font-bold truncate">{k}</div>
+                        <input type="number" value={settings.puntos[k]} onChange={e=>setSettings(s => ({...s, puntos:{...s.puntos, [k]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" />
+                      </div>
+                    ))}
+
+                    <div style={{marginTop:10}}>
+                      <div className="text-xs font-bold mb-2">Thresholds (Limites de Risco)</div>
+                      <div className="grid grid-cols-4 gap-2">
+                        <div className="flex items-center gap-2"><div className="text-xs">Baixo</div><input type="number" value={settings.thresholds?.baixo || 20} onChange={e=>setSettings(s => ({...s, thresholds:{...s.thresholds, baixo: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        <div className="flex items-center gap-2"><div className="text-xs">Médio</div><input type="number" value={settings.thresholds?.medio || 45} onChange={e=>setSettings(s => ({...s, thresholds:{...s.thresholds, medio: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        <div className="flex items-center gap-2"><div className="text-xs">Alto</div><input type="number" value={settings.thresholds?.alto || 75} onChange={e=>setSettings(s => ({...s, thresholds:{...s.thresholds, alto: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        <div className="flex items-center gap-2"><div className="text-xs">Crítico</div><input type="number" value={settings.thresholds?.critico || 90} onChange={e=>setSettings(s => ({...s, thresholds:{...s.thresholds, critico: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                      </div>
+                      <div className="text-[10px] muted mt-2">Os thresholds definem os limites para classificar automaticamente Baixo/Médio/Alto/Crítico.</div>
+                    </div>
+
+                    <div className="mt-4"><button className="button-primary w-full" onClick={()=>saveSettings(settings)}>Salvar Pesos & Thresholds</button></div>
+                  </div>
+                ) : <div>Carregando...</div>}
+              </div>
+            </div>
+
+            <div style={{marginTop:18}} className="grid md:grid-cols-2 gap-6">
+              <div className="p-4 border rounded-2xl">
+                <h4 className="font-black mb-3">Gestão de Produtos</h4>
+                <div className="grid gap-2">
+                  <input placeholder="Nome do produto" className="border p-2 rounded" value={prodEdit.name} onChange={e=>setProdEdit({...prodEdit, name:e.target.value})} />
+                  <input placeholder="Categoria" className="border p-2 rounded" value={prodEdit.category} onChange={e=>setProdEdit({...prodEdit, category:e.target.value})} />
+                  <select className="border p-2 rounded" value={prodEdit.risk} onChange={e=>setProdEdit({...prodEdit, risk:e.target.value})}>
+                    <option>Baixo</option><option>Médio</option><option>Alto</option>
+                  </select>
+                  <div className="flex gap-2">
+                    <button className="button-primary" onClick={saveProduct}>Salvar</button>
+                    <button className="button-ghost" onClick={()=>setProdEdit({ id:'', name:'', category:'', risk:'Baixo' })}>Limpar</button>
+                  </div>
+                  <div style={{marginTop:8}}>
+                    <div className="muted">Produtos atuais</div>
+                    <div className="max-h-40 overflow-y-auto custom-scroll mt-2 space-y-2">
+                      {products.map(p => (
+                        <div key={p.id} className="flex justify-between items-center p-2 border rounded">
+                          <div>
+                            <div style={{fontWeight:700}}>{p.name}</div>
+                            <div className="muted small">{p.category} • {p.risk}</div>
+                          </div>
+                          <div style={{display:'flex',gap:6}}>
+                            <button className="button-ghost" onClick={()=>setProdEdit(p)}>Editar</button>
+                            <button className="button-ghost" onClick={()=>deleteProduct(p.id)}>Rem</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 border rounded-2xl">
+                <h4 className="font-black mb-3">Gestão de Crimes & Facções</h4>
+                <div className="grid gap-2">
+                  <div className="text-xs font-bold">Adicionar / Editar Crime</div>
+                  <input placeholder="Nome do crime" className="border p-2 rounded" value={crimeEdit.nome} onChange={e=>setCrimeEdit({...crimeEdit, nome:e.target.value})} />
+                  <input placeholder="Tipo (Ex: Criminal/Financeiro)" className="border p-2 rounded" value={crimeEdit.tipo} onChange={e=>setCrimeEdit({...crimeEdit, tipo:e.target.value})} />
+                  <select className="border p-2 rounded" value={crimeEdit.risco} onChange={e=>setCrimeEdit({...crimeEdit, risco:e.target.value})}>
+                    <option>Baixo</option><option>Médio</option><option>Alto</option><option>Inadmissível</option>
+                  </select>
+                  <div className="flex gap-2">
+                    <button className="button-primary" onClick={saveCrime}>Salvar Crime</button>
+                    <button className="button-ghost" onClick={()=>setCrimeEdit({ id:'', nome:'', tipo:'', risco:'Médio' })}>Limpar</button>
+                  </div>
+
+                  <div style={{marginTop:8}}>
+                    <div className="muted">Crimes atuais</div>
+                    <div className="max-h-40 overflow-y-auto custom-scroll mt-2 space-y-2">
+                      {crimes.map(c => (
+                        <div key={c.id} className="flex justify-between items-center p-2 border rounded">
+                          <div>
+                            <div style={{fontWeight:700}}>{c.nome}</div>
+                            <div className="muted small">{c.tipo} • {c.risco}</div>
+                          </div>
+                          <div style={{display:'flex',gap:6}}>
+                            <button className="button-ghost" onClick={()=>setCrimeEdit(c)}>Editar</button>
+                            <button className="button-ghost" onClick={()=>deleteCrime(c.id)}>Rem</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{marginTop:12}}>
+                    <div className="text-xs font-bold">Gestão de Facções</div>
+                    <input placeholder="Nome da facção" className="border p-2 rounded" value={factionEdit.nome} onChange={e=>setFactionEdit({...factionEdit, nome:e.target.value})} />
+                    <input placeholder="Região" className="border p-2 rounded" value={factionEdit.regiao} onChange={e=>setFactionEdit({...factionEdit, regiao:e.target.value})} />
+                    <select className="border p-2 rounded" value={factionEdit.perigo} onChange={e=>setFactionEdit({...factionEdit, perigo:e.target.value})}>
+                      <option>Baixa</option><option>Média</option><option>Alta</option>
+                    </select>
+                    <div className="flex gap-2 mt-2">
+                      <button className="button-primary" onClick={saveFaction}>Salvar Facção</button>
+                      <button className="button-ghost" onClick={()=>setFactionEdit({ id:'', nome:'', regiao:'', perigo:'Média' })}>Limpar</button>
+                    </div>
+
+                    <div className="muted" style={{marginTop:8}}>Facções atuais</div>
+                    <div className="max-h-40 overflow-y-auto custom-scroll mt-2 space-y-2">
+                      {factions.map(f => (
+                        <div key={f.id} className="flex justify-between items-center p-2 border rounded">
+                          <div>
+                            <div style={{fontWeight:700}}>{f.nome}</div>
+                            <div className="muted small">{f.regiao} • {f.perigo}</div>
+                          </div>
+                          <div style={{display:'flex',gap:6}}>
+                            <button className="button-ghost" onClick={()=>setFactionEdit(f)}>Editar</button>
+                            <button className="button-ghost" onClick={()=>deleteFaction(f.id)}>Rem</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            </div>
+
+            {/* Áreas de Negócio: nova seção dinâmica */}
+            <div style={{marginTop:18}} className="p-4 border rounded-2xl bg-white">
+              <h4 className="font-black mb-3">Gerenciar Áreas de Negócio (Dinâmico)</h4>
+              <div className="grid md:grid-cols-3 gap-3">
+                <input placeholder="Nome da Área (ex: Comércio Exterior)" className="border p-2 rounded" value={areaEdit.name} onChange={e=>setAreaEdit({...areaEdit, name:e.target.value})} />
+                <select className="border p-2 rounded" value={areaEdit.risk} onChange={e=>setAreaEdit({...areaEdit, risk:e.target.value})}>
+                  <option value="Baixo">Baixo</option>
+                  <option value="Médio">Médio</option>
+                  <option value="Alto">Alto</option>
+                  <option value="Inadmissível">Inadmissível</option>
+                </select>
+                <div className="flex gap-2">
+                  <button className="button-primary" onClick={saveArea}>Salvar Área</button>
+                  <button className="button-ghost" onClick={()=>setAreaEdit({ id:'', name:'', risk:'Baixo' })}>Limpar</button>
+                </div>
+              </div>
+
+              <div style={{marginTop:12}}>
+                <div className="muted">Áreas cadastradas</div>
+                <div className="max-h-40 overflow-y-auto custom-scroll mt-2 space-y-2">
+                  {areas.map(a => (
+                    <div key={a.id} className="flex justify-between items-center p-2 border rounded">
+                      <div>
+                        <div style={{fontWeight:700}}>{a.name}</div>
+                        <div className="muted small">Nível: {a.risk}</div>
+                      </div>
+                      <div style={{display:'flex',gap:6}}>
+                        <button className="button-ghost" onClick={()=>setAreaEdit(a)}>Editar</button>
+                        <button className="button-ghost" onClick={()=>deleteArea(a.id)}>Rem</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('wizard');
+      const [step, setStep] = useState(0);
+      const [formData, setFormData] = useState({
+        personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira',
+        capitalSocial:'', filialCount:0, objetivo:'cliente', objetivoLabel:'Cliente',
+        products: [], complexity: 'Simples', pepType: 'Nao', pepRole: '',
+        negativeMedia: false, mediaLinks: [], sanctionsList:false, sanctionLinks: [],
+        lawsuits: [], estrutura: { socios: [], dirigentes: [] },
+        parecerFinal: '', analystName: '', reviewerName: '',
+        areaName: '', areaCategoria: ''
+      });
+      const [history, setHistory] = useState([]);
+      const [historyView, setHistoryView] = useState('list');
+      const [products, setProducts] = useState([]);
+      const [crimes, setCrimes] = useState([]);
+      const [settings, setSettings] = useState(null);
+      const [areas, setAreas] = useState([]); // lista dinâmica de áreas
+      const [printStamp, setPrintStamp] = useState(0);
+
+      // compact details toggle for relationship alerts
+      const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
+
+      useEffect(()=>{ (async ()=>{
+        await seedIfEmpty();
+        setHistory(await db.analyses.toArray());
+        setProducts(await db.products.toArray());
+        setCrimes(await db.crimes.toArray());
+        setSettings(await db.settings.get('default'));
+        setAreas(await db.areas.toArray()); // carregar áreas dinâmicas
+      })(); }, []);
+
+      const computed = useMemo(()=> calculateRiskAndBreakdown(formData, products, crimes, settings), [formData, products, crimes, settings]);
+      const { score, level, isCritical, breakdown } = computed;
+
+      const toggleProduct = (id) => {
+        setFormData(prev => {
+          const exists = prev.products.find(x => x.id === id);
+          if (exists) {
+            return { ...prev, products: prev.products.filter(x => x.id !== id) };
+          } else {
+            return { ...prev, products: [...prev.products, { id, load: 0, periodicity: 'mensal' }] };
+          }
+        });
+      };
+      const updateProductDetails = (id, field, val) => {
+        setFormData(prev => ({ ...prev, products: prev.products.map(p => p.id === id ? { ...p, [field]: val } : p) }));
+      };
+      const addLawsuit = (l) => setFormData(prev => ({ ...prev, lawsuits: [...(prev.lawsuits||[]), { ...l, id: uid() }] }));
+      const removeLawsuit = (id) => setFormData(prev => ({ ...prev, lawsuits: (prev.lawsuits||[]).filter(x=>x.id!==id) }));
+      const addSocio = (socio) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), socios: [...(prev.estrutura?.socios||[]), { id: uid(), ...socio }] } }));
+      const removeSocio = (id) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), socios: (prev.estrutura?.socios||[]).filter(s => s.id !== id) } }));
+      const addDir = (dir) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), dirigentes: [...(prev.estrutura?.dirigentes||[]), { id: uid(), ...dir }] } }));
+      const removeDir = (id) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), dirigentes: (prev.estrutura?.dirigentes||[]).filter(d => d.id !== id) } }));
+
+      const saveAnalysisToHistory = async () => {
+        const entry = {
+          name: formData.name || '-',
+          document: formData.document || '-',
+          score, level, date: nowISO(), payload: { form: formData, breakdown }
+        };
+        await db.analyses.add(entry);
+        setHistory(await db.analyses.toArray());
+        alert('Análise salva localmente no histórico.');
+      };
+
+      const exportHistoryCSV = async () => {
+        const h = await db.analyses.toArray();
+        const rows = [['Data','Nome','Documento','Score','Nível']];
+        h.forEach(item => rows.push([new Date(item.date).toLocaleString(), item.name, item.document, item.score, item.level]));
+        const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'valloo_historico.csv'; a.click();
+      };
+
+      const exportAnalysisJSON = async (item) => {
+        const blob = new Blob([JSON.stringify(item, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `analysis_${item.id || Date.now()}.json`; a.click();
+      };
+
+      const clearHistory = async () => {
+        if(!confirm('Deseja realmente apagar todo o histórico local?')) return;
+        await db.analyses.clear();
+        setHistory([]);
+      };
+
+      const deleteAnalysis = async (id) => {
+        if(!confirm('Confirmar exclusão desta análise?')) return;
+        await db.analyses.delete(id);
+        setHistory(await db.analyses.toArray());
+        alert('Análise removida.');
+      };
+
+      const loadAnalysisIntoForm = (item) => {
+        if(!item || !item.payload) { alert('Análise inválida'); return; }
+        setFormData(item.payload.form);
+        setStep(0); setActiveTab('wizard');
+      };
+
+      const handlePrint = async () => {
+        await saveAnalysisToHistory();
+        setPrintStamp(s => s + 1);
+        setTimeout(()=> window.print(), 300);
+      };
+
+      const refreshAll = async () => {
+        setProducts(await db.products.toArray());
+        setCrimes(await db.crimes.toArray());
+        setSettings(await db.settings.get('default'));
+        setHistory(await db.analyses.toArray());
+        setAreas(await db.areas.toArray());
+      };
+
+      // compute compact relationship alerts: only matches between current form's socios/dirigentes and historical entries
+      const relationshipAlerts = useMemo(() => {
+        const map = {}; // key -> { name, type, companies:Set }
+        (history || []).forEach(h => {
+          const histSocios = ((h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.socios) || []).map(s => (s.name || '').trim()).filter(Boolean);
+          const histDir = ((h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.dirigentes) || []).map(d => (d.name || '').trim()).filter(Boolean);
+
+          (formData.estrutura.socios || []).forEach(s => {
+            const name = (s.name || '').trim();
+            if(name && histSocios.includes(name)) {
+              const key = `S::${name}`;
+              if(!map[key]) map[key] = { name, type: 'Sócio', companies: new Set() };
+              map[key].companies.add(h.name || ('#' + (h.id||'?')));
+            }
+          });
+
+          (formData.estrutura.dirigentes || []).forEach(d => {
+            const name = (d.name || '').trim();
+            if(name && histDir.includes(name)) {
+              const key = `D::${name}`;
+              if(!map[key]) map[key] = { name, type: 'Dirigente', companies: new Set() };
+              map[key].companies.add(h.name || ('#' + (h.id||'?')));
+            }
+          });
+        });
+        return Object.values(map).map(v => ({ name: v.name, type: v.type, companies: Array.from(v.companies) }));
+      }, [history, formData]);
+
+      /* PrintReport: REMOVED the Mapa de Relacionamentos section entirely so map is not printed. (Request preserved) */
+      const PrintReport = ({ stamp }) => (
+        <div className="print-only report-page">
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'start',borderBottom:'12px solid #0f172a',paddingBottom:20,marginBottom:18}}>
+            <div style={{display:'flex', gap: 15, alignItems:'center'}}>
+                {APP_LOGO_BASE64 ? (
+                    <img src={APP_LOGO_BASE64} style={{height:40, maxWidth:150, objectFit:'contain'}} alt="Logo" />
+                ) : (
+                    <div style={{fontSize:28,fontWeight:900}}>VALLOO</div>
+                )}
+                <div style={{fontSize:28,fontWeight:900,letterSpacing:1}}>GRC <span style={{color:'#0ea5e9'}}>PRO</span></div>
+            </div>
+            <div style={{textAlign:'right',fontSize:12,fontWeight:700,color:'#64748b'}}>Relatório de Auditoria — v15.6<br/>{new Date().toLocaleString()}</div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 320px',gap:20}}>
+            <div>
+              <h4 style={{background:'#0f172a',color:'#fff',display:'inline-block',padding:'6px 10px',fontSize:12,fontWeight:800}}>DADOS DO CLIENTE</h4>
+              <table className="report-table" style={{marginTop:8}}>
+                <thead><tr><th>Campo</th><th>Valor</th></tr></thead>
+                <tbody>
+                  <tr><td>Nome</td><td>{formData.name || '-'}</td></tr>
+                  <tr><td>Documento</td><td>{formData.document || '-'}</td></tr>
+                  <tr><td>Capital Social</td><td>{formData.capitalSocial || '-'}</td></tr>
+                  <tr><td>Filiais</td><td>{formData.filialCount || 0}</td></tr>
+                  <tr><td>Objetivo</td><td>{formData.objetivoLabel || '-'}</td></tr>
+                  <tr><td>Societário</td><td>{formData.complexity}</td></tr>
+                  <tr><td>PEP</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}</td></tr>
+                  <tr><td>Estado</td><td>{formData.state}</td></tr>
+                  <tr><td>Área de Negócio</td><td>{formData.areaName ? formData.areaName + ' — ' + (formData.areaCategoria || '-') : '-'}</td></tr>
+                </tbody>
+              </table>
+
+              <h4 style={{background:'#0f172a',color:'#fff',display:'inline-block',padding:'6px 10px',fontSize:12,fontWeight:800, marginTop:18}}>COMPOSIÇÃO SOCIETÁRIA E ADMINISTRAÇÃO</h4>
+              <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:20, marginTop:8}}>
+                  <div>
+                    <div style={{fontSize:11, fontWeight:800, textTransform:'uppercase', borderBottom:'1px solid #ccc', marginBottom:4}}>Sócios / Beneficiários Finais</div>
+                    <table className="report-table">
+                        <thead><tr><th>Nome</th><th>Idade</th></tr></thead>
+                        <tbody>
+                          { (!formData.estrutura.socios || formData.estrutura.socios.length === 0) && <tr><td colSpan="2">-</td></tr> }
+                          { (formData.estrutura.socios || []).map((s,i) => <tr key={i}><td>{s.name}</td><td>{s.age}</td></tr>) }
+                        </tbody>
+                    </table>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11, fontWeight:800, textTransform:'uppercase', borderBottom:'1px solid #ccc', marginBottom:4}}>Dirigentes / Administradores</div>
+                    <table className="report-table">
+                        <thead><tr><th>Nome</th><th>Cargo</th></tr></thead>
+                        <tbody>
+                          { (!formData.estrutura.dirigentes || formData.estrutura.dirigentes.length === 0) && <tr><td colSpan="2">-</td></tr> }
+                          { (formData.estrutura.dirigentes || []).map((d,i) => <tr key={i}><td>{d.name}</td><td>{d.role}</td></tr>) }
+                        </tbody>
+                    </table>
+                  </div>
+              </div>
+
+              <h4 style={{background:'#0f172a',color:'#fff',display:'inline-block',padding:'6px 10px',fontSize:12,fontWeight:800, marginTop:14}}>PRODUTOS SELECIONADOS</h4>
+              <table className="report-table" style={{marginTop:8}}>
+                <thead><tr><th>Produto</th><th>Categoria</th><th>Risco</th><th>Carga (R$)</th><th>Freq.</th></tr></thead>
+                <tbody>
+                  { (breakdown.products.length === 0) && <tr><td colSpan="5">Nenhum produto selecionado</td></tr> }
+                  { breakdown.products.map((p,i) => (
+                    <tr key={i}>
+                      <td>{p.name}</td>
+                      <td>{p.category}</td>
+                      <td>{p.risk}</td>
+                      <td>{p.load}</td>
+                      <td>{p.periodicity}</td>
+                    </tr>
+                  )) }
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{textAlign:'center',alignSelf:'center',padding:12,border:'6px solid #0f172a',borderRadius:40}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#64748b',textTransform:'uppercase'}}>Score de Risco</div>
+              <div style={{fontSize:56,fontWeight:900,margin:'10px 0'}}>{score}</div>
+              <div style={{fontSize:20,fontWeight:800,color: level === 'CRÍTICO' ? '#dc2626' : '#0f172a', textTransform:'uppercase'}}>Risco {level}</div>
+            </div>
+          </div>
+
+          <div style={{marginTop:18}}>
+            <h4 style={{fontWeight:800}}>Dossiê de Processos e Antecedentes</h4>
+            <table className="report-table">
+              <thead><tr><th>Processo nº</th><th>Assunto</th><th>Polo Ativo</th><th>Polo Passivo</th><th>Tipo</th><th>Status</th><th>Crime</th></tr></thead>
+              <tbody>
+                { (formData.lawsuits || []).length === 0 && <tr><td colSpan="7">Nenhum processo cadastrado</td></tr> }
+                { (formData.lawsuits || []).map((pr, i) => (
+                  <tr key={'dp'+i}>
+                    <td>{pr.description}</td>
+                    <td>{pr.subject}</td>
+                    <td>{pr.activeParty}</td>
+                    <td>{pr.passiveParty}</td>
+                    <td>{pr.type}</td>
+                    <td>{pr.status}</td>
+                    <td>{pr.crimeNome || '-'}</td>
+                  </tr>
+                )) }
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{marginTop:18}}>
+            <h4 style={{fontWeight:800}}>Parecer Final do Analista</h4>
+            <div style={{border:'1px solid #e6eef8', padding:12, borderRadius:8, minHeight:80, background:'#fbfdff'}}>
+              <div style={{whiteSpace:'pre-wrap', fontSize:13, color:'#0f172a'}}>{formData.parecerFinal || '-'}</div>
+            </div>
+          </div>
+
+          <div style={{marginTop:18}}>
+            <h4 style={{fontWeight:800}}>Detalhamento — Breakdown</h4>
+            <table className="report-table">
+              <thead><tr><th>Item</th><th>Categoria</th><th>Observação</th><th>Pontos</th></tr></thead>
+              <tbody>
+                { breakdown.products.map((p,i) => <tr key={'rp'+i}><td>{p.name}</td><td>Produto</td><td>Risco {p.risk}</td><td>{p.contrib}</td></tr>) }
+                <tr><td>Quadro societário</td><td>Estrutura</td><td>{formData.complexity}</td><td>{breakdown.quadro}</td></tr>
+                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}</td><td>{breakdown.pep}</td></tr>
+                <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.media}</td></tr>
+                <tr><td>Sanções</td><td>Listas</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.sanctions}</td></tr>
+                <tr><td>Área de Negócio</td><td>Categoria</td><td>{formData.areaCategoria || '-'}</td><td>{breakdown.area || 0}</td></tr>
+                { breakdown.processos.map((pr, i) => <tr key={'pr'+i}><td>{pr.description}</td><td>{pr.type}</td><td>{pr.analyzedRole}{pr.crimeNome ? ' — ' + pr.crimeNome : ''}</td><td>{pr.contrib}</td></tr>) }
+                <tr style={{fontWeight:800}}><td colSpan="3">Total</td><td>{breakdown.totalBeforeMultipliers}</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{marginTop:40,borderTop:'1px solid #e6eef8',paddingTop:20, display:'flex', justifyContent:'space-between'}}>
+              <div style={{textAlign:'center'}}>
+                  <div style={{borderTop:'1px solid #000', width:220, margin:'0 auto', paddingBottom:4}}></div>
+                  <div style={{fontSize:14, fontWeight:700}}>{formData.analystName || '_______________________'}</div>
+                  <div style={{fontSize:11, color:'#64748b', marginTop:2}}>Analista Responsável</div>
+              </div>
+              <div style={{textAlign:'center'}}>
+                  <div style={{borderTop:'1px solid #000', width:220, margin:'0 auto', paddingBottom:4}}></div>
+                  <div style={{fontSize:14, fontWeight:700}}>{formData.reviewerName || '_______________________'}</div>
+                  <div style={{fontSize:11, color:'#64748b', marginTop:2}}>Validação Técnica / Revisor</div>
+              </div>
+          </div>
+          <div style={{marginTop:20, textAlign:'center', fontStyle:'italic', fontSize:10, color:'#94a3b8'}}>Documento gerado eletronicamente - Valloo GRC Pro Risk Engine v15.6</div>
+        </div>
+      );
+
+      const renderWizard = () => (
+        <div className="max-w-6xl mx-auto pb-20 animate-in fade-in duration-500">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="bg-slate-900 p-8 text-white flex justify-between items-center no-print">
+              <div className="flex items-center gap-4">
+                <div className="bg-blue-600 px-4 py-2 rounded-xl font-black italic">V15.6</div>
+                <div>
+                  <h2 className="text-xl font-black tracking-tighter uppercase">Análise de Compliance</h2>
+                  <p className="text-[10px] text-slate-400 font-bold tracking-widest uppercase">Motor de Risco Dinâmico</p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                {[0, 1, 2, 3].map(i => (
+                  <div key={i} className={`h-1.5 w-12 rounded-full ${step >= i ? 'bg-blue-500' : 'bg-slate-700'}`}></div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-10">
+              {step === 0 && (
+                <div className="grid md:grid-cols-3 gap-8">
+                  <div className="col-span-full flex justify-between items-center border-b pb-4">
+                    <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="user"/> Dados Cadastrais</h3>
+                    <button onClick={() => { setFormData({
+                      personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira',
+                      capitalSocial:'', filialCount:0, objetivo:'cliente', objetivoLabel:'Cliente',
+                      products: [], complexity: 'Simples', pepType: 'Nao', pepRole: '',
+                      negativeMedia: false, mediaLinks: [], sanctionsList:false, sanctionLinks: [],
+                      lawsuits: [], estrutura: { socios: [], dirigentes: [] }, parecerFinal: '', analystName: '', reviewerName: '',
+                      areaName:'', areaCategoria:''
+                    }); setStep(0); }} className="text-[10px] font-black bg-slate-100 px-4 py-1.5 rounded-full hover:bg-slate-200">REINICIAR</button>
+                  </div>
+
+                  <Field label="Tipo" type="select" value={formData.personType} onChange={v=>setFormData({...formData, personType:v})} options={[{v:'PJ', l:'PJ'},{v:'PF', l:'PF'}]}/>
+                  <Field label="Razão Social / Nome" value={formData.name} onChange={v=>setFormData({...formData, name:v})} placeholder="Valloo..."/>
+                  <Field label="CNPJ / CPF" value={formData.document} onChange={v=>setFormData({...formData, document:v})} placeholder="00.000.000/0000-00"/>
+
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Data de Constituição / Nascimento</label>
+                    <input type="date" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white" value={formData.startDate} onChange={e=>setFormData({...formData, startDate:e.target.value})} />
+                  </div>
+
+                  <Field label="Estado (UF)" value={formData.state} onChange={v=>setFormData({...formData, state:v})}/>
+                  <Field label="Nacionalidade" value={formData.nationality} onChange={v=>setFormData({...formData, nationality:v})}/>
+
+                  <Field label="Capital Social (R$)" value={formData.capitalSocial} onChange={v=>setFormData({...formData, capitalSocial:v})} />
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Quantidade de Filiais</label>
+                    <input type="number" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white" value={formData.filialCount} onChange={e=>setFormData({...formData, filialCount: Number(e.target.value)})} />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Objetivo do relacionamento</label>
+                    <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white font-bold text-slate-700" value={formData.objetivo} onChange={e=>setFormData({...formData, objetivo: e.target.value, objetivoLabel: e.target.options[e.target.selectedIndex].text})}>
+                      <option value="cliente">Cliente</option>
+                      <option value="parceiro">Parceiro de Negócios</option>
+                      <option value="prestador">Prestador de Serviços</option>
+                      <option value="recrutador">Profissional em Recrutamento</option>
+                    </select>
+                  </div>
+
+                  {/* Área de Negócio: preenchida dinamicamente a partir do DB 'areas' (requisito) */}
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Área de Negócio</label>
+                    <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white font-bold text-slate-700" value={formData.areaName || ''} onChange={e=>{
+                      const selectedName = e.target.value;
+                      const found = (areas || []).find(a => a.name === selectedName);
+                      if(found) {
+                        setFormData(prev => ({ ...prev, areaName: found.name, areaCategoria: found.risk }));
+                      } else {
+                        // if not found in dynamic list (backwards compatibility), keep previous logic mapping by name
+                        const map = {
+                          'Atacado':'Baixo','Consultoria':'Baixo','Hotelaria':'Baixo','Imobiliária':'Baixo','Serviços TI':'Baixo',
+                          'Construtora':'Médio','Indústria':'Médio','Saúde':'Médio','Sem fins lucrativos':'Médio',
+                          'Posto de Gasolina':'Alto','Joias':'Alto','Câmbio':'Alto','Obras Públicas':'Alto','Comércio Exterior':'Alto',
+                          'Jogos de azar':'Inadmissível','Criptoativos':'Inadmissível'
+                        };
+                        setFormData(prev => ({ ...prev, areaName: selectedName, areaCategoria: map[selectedName] || '' }));
+                      }
+                    }}>
+                      <option value="">-- selecione --</option>
+                      {/* render grouped options based on areas state to keep UI tidy */}
+                      {['Baixo','Médio','Alto','Inadmissível'].map(group => {
+                        const groupItems = (areas || []).filter(a => a.risk === group);
+                        if(groupItems.length === 0) return null;
+                        return (
+                          <optgroup key={group} label={`${group} (${groupItems.length})`}>
+                            {groupItems.map(a => <option key={a.id} value={a.name}>{a.name}</option>)}
+                          </optgroup>
+                        );
+                      })}
+                    </select>
+                    { formData.areaCategoria === 'Inadmissível' && (
+                      <div className="muted" style={{color:'#b91c1c', fontWeight:800, marginTop:8}}>Área Inadmissível selecionada — score travado como Risco Inadmissível.</div>
+                    ) }
+                  </div>
+
+                  <div className="col-span-full border-b pb-4 mt-8">
+                    <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="network"/> Complexidade do Quadro Societário</h3>
+                  </div>
+
+                  <div className="col-span-full flex gap-4">
+                    {[ {v:'Simples', l:'EIRELI / ME / Único Sócio', d:'Risco Baixo'}, {v:'Moderada', l:'LTDA / Múltiplos Sócios', d:'Risco Médio'}, {v:'Complexa', l:'S.A / Holding / Offshore', d:'Risco ALTO'} ].map(opt => (
+                      <button key={opt.v} onClick={()=>setFormData({...formData, complexity: opt.v})} className={`flex-1 p-6 border-2 rounded-3xl text-left transition-all ${formData.complexity === opt.v ? 'border-blue-500 bg-blue-50 shadow-md' : 'border-slate-100 hover:border-slate-200'}`}>
+                        <div className={`w-3 h-3 rounded-full mb-3 ${opt.v === 'Simples' ? 'bg-green-500' : opt.v === 'Moderada' ? 'bg-yellow-500' : 'bg-red-500'}`}></div>
+                        <div className="font-black text-slate-800 text-sm">{opt.l}</div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{opt.d}</div>
+                      </button>
+                    ))} 
+                  </div>
+
+                  <div className="col-span-full border-b pb-4 mt-8">
+                    <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="shield"/> PEP</h3>
+                  </div>
+
+                  <Field label="Enquadramento PEP" type="select" value={formData.pepType} onChange={v=>setFormData({...formData, pepType:v})} options={[{v:'Nao', l:'Não é PEP'},{v:'Direto', l:'PEP Direto'},{v:'Indireto', l:'Relacionado/Familiar'}]}/>
+                  {formData.pepType !== 'Nao' && <div className="col-span-2"><Field label="Cargo / Função" value={formData.pepRole} onChange={v=>setFormData({...formData, pepRole:v})}/></div>}
+
+                  <div className="col-span-full border-t pt-6 mt-6">
+                    <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest mb-4">Estrutura Societária — Sócios & Dirigentes</h3>
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="p-4 border rounded-2xl">
+                        <h4 className="font-black text-sm mb-2">Adicionar Sócio / Beneficiário Final</h4>
+                        <div style={{display:'flex',gap:8}}>
+                          <input placeholder="Nome" className="border p-2 rounded flex-1" value={formData._newSocioName || ''} onChange={e=>setFormData(prev=>({...prev, _newSocioName: e.target.value}))}/>
+                          <input placeholder="Idade" className="border p-2 rounded w-24" value={formData._newSocioAge || ''} onChange={e=>setFormData(prev=>({...prev, _newSocioAge: e.target.value}))}/>
+                          <button className="button-primary" onClick={()=>{
+                            if(!formData._newSocioName) return alert('Nome obrigatório');
+                            addSocio({ name: formData._newSocioName, age: formData._newSocioAge });
+                            setFormData(prev=>({...prev, _newSocioName:'', _newSocioAge:''}));
+                          }}>Adicionar</button>
+                        </div>
+                        <div className="mt-4 max-h-40 overflow-y-auto custom-scroll">
+                          {(formData.estrutura?.socios || []).map(s => (
+                            <div key={s.id} className="flex justify-between items-center p-2 border rounded mb-2">
+                              <div><div style={{fontWeight:700}}>{s.name}</div><div className="muted small">Idade: {s.age || '-'}</div></div>
+                              <button className="button-ghost" onClick={()=>removeSocio(s.id)}>Rem</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="p-4 border rounded-2xl">
+                        <h4 className="font-black text-sm mb-2">Adicionar Dirigente / Administrador</h4>
+                        <div style={{display:'flex',gap:8}}>
+                          <input placeholder="Nome" className="border p-2 rounded flex-1" value={formData._newDirName || ''} onChange={e=>setFormData(prev=>({...prev, _newDirName: e.target.value}))}/>
+                          <input placeholder="Cargo" className="border p-2 rounded w-36" value={formData._newDirRole || ''} onChange={e=>setFormData(prev=>({...prev, _newDirRole: e.target.value}))}/>
+                          <button className="button-primary" onClick={()=>{
+                            if(!formData._newDirName) return alert('Nome obrigatório');
+                            addDir({ name: formData._newDirName, role: formData._newDirRole });
+                            setFormData(prev=>({...prev, _newDirName:'', _newDirRole:''}));
+                          }}>Adicionar</button>
+                        </div>
+                        <div className="mt-4 max-h-40 overflow-y-auto custom-scroll">
+                          {(formData.estrutura?.dirigentes || []).map(d => (
+                            <div key={d.id} className="flex justify-between items-center p-2 border rounded mb-2">
+                              <div><div style={{fontWeight:700}}>{d.name}</div><div className="muted small">Cargo: {d.role || '-'}</div></div>
+                              <button className="button-ghost" onClick={()=>removeDir(d.id)}>Rem</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {step === 1 && (
+                <div className="space-y-8">
+                  <div className="border-b pb-4 flex justify-between items-center">
+                    <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="credit-card"/> Produtos Selecionados</h3>
+                    <div className="text-[10px] font-black text-slate-400">Clique para selecionar e definir Carga/Frequência</div>
+                  </div>
+
+                  <div className="grid md:grid-cols-3 gap-6">
+                    {products.map(p => {
+                      const selectedItem = formData.products.find(x => x.id === p.id);
+                      const isSelected = !!selectedItem;
+
+                      return (
+                        <div key={p.id} className={`p-5 border-2 rounded-3xl transition-all flex flex-col gap-3 relative overflow-hidden ${isSelected ? 'border-blue-600 bg-blue-50 shadow-lg' : 'border-slate-100 bg-white'}`}>
+                           <button onClick={() => toggleProduct(p.id)} className="text-left w-full relative z-10">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-[8px] font-black uppercase text-slate-400">{p.category}</span>
+                              <Icon name={isSelected ? "check-circle" : "circle"} className={isSelected ? "text-blue-600" : "text-slate-200"} />
+                            </div>
+                            <div className="font-black text-slate-800 text-[13px] leading-tight">{p.name}</div>
+                            <div className={`mt-2 text-[10px] font-bold uppercase tracking-widest ${p.risk === 'Alto' ? 'text-red-500' : p.risk === 'Médio' ? 'text-yellow-600' : 'text-green-600'}`}>Risco {p.risk}</div>
+                          </button>
+
+                          {isSelected && (
+                            <div className="mt-3 pt-3 border-t border-blue-200 animate-in slide-in-from-top-2 space-y-2">
+                                <div>
+                                    <label className="text-[9px] font-bold text-slate-500 uppercase">Carga Estimada (R$)</label>
+                                    <input type="number" className="w-full p-2 rounded-lg border border-blue-200 text-xs font-bold" value={selectedItem.load} onChange={e=>updateProductDetails(p.id, 'load', Number(e.target.value))} />
+                                </div>
+                                <div>
+                                    <label className="text-[9px] font-bold text-slate-500 uppercase">Periodicidade</label>
+                                    <select className="w-full p-2 rounded-lg border border-blue-200 text-xs font-bold" value={selectedItem.periodicity} onChange={e=>updateProductDetails(p.id, 'periodicity', e.target.value)}>
+                                        <option value="unica">Única</option>
+                                        <option value="mensal">Mensal</option>
+                                        <option value="semanal">Semanal</option>
+                                        <option value="diaria">Diária</option>
+                                    </select>
+                                </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {step === 2 && (
+                <div className="grid md:grid-cols-12 gap-10">
+                  <div className="md:col-span-5 space-y-6">
+                    <div className="bg-slate-900 p-8 rounded-[2.5rem] text-white">
+                      <h4 className="font-black text-xs uppercase tracking-widest mb-6 border-l-4 border-blue-500 pl-4 text-blue-400">Pesquisa de Mídia & Sanções</h4>
+                      <MediaSanctionManager title="Mídias Negativas" active={formData.negativeMedia} onToggle={v=>setFormData(prev=>({...prev, negativeMedia:v}))} items={formData.mediaLinks} onUpdate={it=>setFormData(prev=>({...prev, mediaLinks:it}))} />
+                      <div className="h-4"></div>
+                      <MediaSanctionManager title="Listas de Sanção" active={formData.sanctionsList} onToggle={v=>setFormData(prev=>({...prev, sanctionsList:v}))} items={formData.sanctionLinks} onUpdate={it=>setFormData(prev=>({...prev, sanctionLinks:it}))} />
+                    </div>
+                  </div>
+                  <div className="md:col-span-7">
+                    <h3 className="font-black text-slate-900 uppercase text-xs tracking-widest flex items-center gap-2 mb-6"><Icon name="gavel"/> Gestão Processual</h3>
+                    <LawsuitManager crimes={crimes} items={formData.lawsuits} onAdd={addLawsuit} onRemove={removeLawsuit} />
+                  </div>
+                </div>
+              )}
+
+              {step === 3 && (
+                <div className="py-20 flex flex-col items-center justify-center space-y-10 animate-in zoom-in-95">
+                  <div className={`w-64 h-64 rounded-[4rem] border-[15px] flex flex-col items-center justify-center shadow-2xl transition-all ${level === 'CRÍTICO' ? 'border-red-600 bg-red-50 text-red-600' : 'border-blue-600 bg-blue-50 text-blue-600'}`}>
+                    <span className="text-8xl font-black">{score}</span>
+                    <span className="font-black text-xs uppercase tracking-[0.3em]">Score GRC</span>
+                  </div>
+                  <div className="text-center">
+                    <h2 className={`text-6xl font-black uppercase italic tracking-tighter ${level === 'CRÍTICO' ? 'text-red-600' : 'text-slate-900'}`}>RISCO {level}</h2>
+                    <p className="text-slate-400 font-bold uppercase tracking-widest text-sm mt-2">Dossiê validado pelos parâmetros Valloo V15.6</p>
+                  </div>
+
+                  <div className="w-full max-w-3xl bg-white border rounded-2xl p-6 space-y-4">
+                    <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Parecer Final do Analista (informativo)</label>
+                        <textarea rows="6" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white mt-3" value={formData.parecerFinal || ''} onChange={e=>setFormData(prev=>({...prev, parecerFinal: e.target.value}))} placeholder="Escreva as conclusões e recomendações do analista. Este texto não influencia o score."></textarea>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 pt-4 border-t">
+                        <Field label="Nome do Analista Responsável" value={formData.analystName} onChange={v=>setFormData(prev=>({...prev, analystName:v}))} placeholder="Quem assina a análise." />
+                        <Field label="Nome do Revisor / Validação Técnica" value={formData.reviewerName} onChange={v=>setFormData(prev=>({...prev, reviewerName:v}))} placeholder="Quem revisou." />
+                    </div>
+                  </div>
+
+                  <div className="flex gap-4 no-print">
+                    <button onClick={handlePrint} className="bg-slate-900 text-white px-12 py-5 rounded-3xl font-black uppercase tracking-widest flex items-center gap-3 shadow-2xl hover:bg-black hover:-translate-y-1 transition-all">
+                      <Icon name="printer" className="w-6 h-6"/> Emitir Relatório Oficial
+                    </button>
+                    <button onClick={() => { setFormData(prev=>({...prev, products:[], mediaLinks:[], sanctionLinks:[], lawsuits:[], estrutura: { socios: [], dirigentes: [] }, parecerFinal: '', analystName: '', reviewerName: '' })); setStep(0); }} className="bg-white border-2 border-slate-200 text-slate-500 px-12 py-5 rounded-3xl font-black uppercase tracking-widest hover:bg-slate-50 transition-all">
+                      <Icon name="refresh-cw" className="w-6 h-6"/> Nova Análise
+                    </button>
+                    <button onClick={saveAnalysisToHistory} className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black shadow-xl">Salvar Análise</button>
+                  </div>
+
+                  <div style={{width:'100%', marginTop:24}}>
+                    <div className="max-w-3xl mx-auto">
+                      <div className="grid md:grid-cols-3 gap-4">
+                        <div className="p-4 bg-white border rounded-2xl">
+                          <div className="text-xs muted">Contribuição Produtos</div>
+                          <div style={{fontWeight:700, marginTop:6}}>{breakdown.products.reduce((s,p)=>s+p.contrib,0)} pts</div>
+                          <div className="muted small" style={{marginTop:6}}>{(formData.mediaLinks||[]).length} mídias • {(formData.sanctionLinks||[]).length} sanções • {(formData.lawsuits||[]).length} processos</div>
+                        </div>
+
+                        <div style={{marginTop:12}} className="bg-white border rounded-2xl p-4">
+                          <div style={{fontWeight:700}}>Detalhamento</div>
+                          <div style={{marginTop:8}}>
+                            <table className="report-table">
+                              <thead>
+                                <tr><th>Item</th><th>Tipo</th><th>Observação</th><th>Contribuição (pts)</th></tr>
+                              </thead>
+                              <tbody>
+                                {breakdown.products.map((p,idx)=>(<tr key={idx}><td>{p.name}</td><td>Produto ({p.category})</td><td>Risco: {p.risk} | Carga: {p.load}</td><td>{p.contrib}</td></tr>))}
+                                <tr><td>Quadro societário</td><td>Estrutura</td><td>{formData.complexity}</td><td>{breakdown.quadro}</td></tr>
+                                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}</td><td>{breakdown.pep}</td></tr>
+                                <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.media}</td></tr>
+                                <tr><td>Sanções</td><td>Listas</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.sanctions}</td></tr>
+                                <tr><td>Área de Negócio</td><td>Categoria</td><td>{formData.areaCategoria || '-'}</td><td>{breakdown.area || 0}</td></tr>
+                                {breakdown.processos.map((proc, i)=>(<tr key={i}><td>{proc.description}</td><td>{proc.type}</td><td>{proc.analyzedRole}{proc.crimeNome ? ' — ' + proc.crimeNome : ''}</td><td>{proc.contrib}</td></tr>))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="p-4 bg-white border rounded-2xl">
+                          <div style={{fontWeight:700}}>Resumo</div>
+                          <div style={{marginTop:8}} className="muted small">Score: {score} • Nível: {level}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+              )}
+
+            </div>
+
+            <div className="bg-slate-50 p-8 border-t flex justify-between no-print items-center">
+              <button disabled={step === 0} onClick={()=>setStep(s=>s-1)} className="px-8 py-3 border-2 border-slate-200 rounded-2xl font-black text-slate-400 disabled:opacity-30 hover:bg-white transition-all uppercase text-xs tracking-widest">Voltar</button>
+              <div className="text-[10px] font-black text-slate-300">VALLOO RISK SYSTEM V15.6</div>
+              {step < 3 && <button onClick={()=>setStep(s=>s+1)} className="px-12 py-4 bg-blue-600 text-white rounded-2xl font-black shadow-xl shadow-blue-200 hover:bg-blue-700 transition-all uppercase text-xs tracking-widest">Avançar</button>}
+            </div>
+          </div>
+        </div>
+      );
+
+      const renderHistory = () => {
+        // prepare compact alerts summary for UI (non-print)
+        const alerts = relationshipAlerts;
+        return (
+          <div className="max-w-6xl mx-auto pb-20">
+            <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden p-10">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-xl font-black">Histórico de Análises</h2>
+                  <div className="muted">Exporte, importe ou revise análises salvas localmente.</div>
+                </div>
+                <div className="flex gap-3">
+                  <button className="button-ghost" onClick={exportHistoryCSV}>Exportar CSV</button>
+                  <button className="button-ghost" onClick={clearHistory}>Limpar histórico</button>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mb-4">
+                <button className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${historyView==='list'?'bg-slate-900 text-white':'text-slate-400'}`} onClick={()=>setHistoryView('list')}>Análises</button>
+                <button className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${historyView==='mapa'?'bg-slate-900 text-white':'text-slate-400'}`} onClick={()=>setHistoryView('mapa')}>Mapa de Relacionamentos</button>
+              </div>
+
+              {historyView === 'list' ? (
+                <div className="space-y-3">
+                  {history.length === 0 && <div className="muted">Nenhuma análise salva.</div>}
+                  {history.map(h => (
+                    <div key={h.id} className="p-4 bg-white border-2 border-slate-100 rounded-2xl flex justify-between items-center">
+                      <div>
+                        <div style={{fontWeight:800}}>{h.name} — {h.document}</div>
+                        <div className="muted small">{new Date(h.date).toLocaleString()} • Score: <strong>{h.score}</strong> • {h.level}</div>
+                        {h.payload && h.payload.form && h.payload.form.parecerFinal && (
+                          <div className="muted small" style={{marginTop:6}}>
+                            <strong>Parecer:</strong> {String(h.payload.form.parecerFinal).slice(0,120)}{String(h.payload.form.parecerFinal).length>120?'...':''}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{display:'flex',gap:8}}>
+                        <button className="button-ghost px-3 py-2" onClick={()=>loadAnalysisIntoForm(h)}>Carregar</button>
+                        <button className="button-ghost px-3 py-2" onClick={()=>exportAnalysisJSON(h)}>Exportar JSON</button>
+                        <button className="button-ghost px-3 py-2" onClick={()=>deleteAnalysis(h.id)}>Excluir</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div>
+                  {/* Compact summary alert */}
+                  <div style={{marginBottom:12}}>
+                    { alerts.length > 0 ? (
+                      <div>
+                        <div className="compact-alert">
+                          <div style={{display:'flex',alignItems:'center',gap:12}}>
+                            <div className="compact-pill">{alerts.length} vínculos</div>
+                            <div style={{fontWeight:800}}>Existem vínculos entre os sócios/dirigentes desta análise e registros no histórico.</div>
+                          </div>
+                          <div>
+                            <button className="button-ghost" onClick={()=>setMapDetailsOpen(v=>!v)}>{mapDetailsOpen ? 'Ocultar detalhes' : 'Ver detalhes'}</button>
+                          </div>
+                        </div>
+
+                        {/* details (non-print only to avoid clutter in PDF) */}
+                        { mapDetailsOpen && (
+                          <div className="compact-details no-print" style={{marginTop:8}}>
+                            <ul>
+                              { alerts.map((a, idx) => (
+                                <li key={idx}><strong>{a.type}:</strong> {a.name} — vinculado em: {a.companies.join(', ')}</li>
+                              )) }
+                            </ul>
+                          </div>
+                        ) }
+                      </div>
+                    ) : (
+                      <div className="muted">Nenhuma relação encontrada</div>
+                    )}
+                  </div>
+
+                  <table className="report-table" style={{marginTop:8}}>
+                    <thead><tr><th>Empresa</th><th>Sócios</th><th>Dirigentes</th></tr></thead>
+                    <tbody>
+                      {history.map((h,i) => {
+                        const socios = (h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.socios || []).map(s => s.name).join(', ') || '-';
+                        const dirs   = (h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.dirigentes || []).map(d => d.name).join(', ') || '-';
+                        return (<tr key={i}><td>{h.name}</td><td>{socios}</td><td>{dirs}</td></tr>);
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+            </div>
+          </div>
+        );
+      };
+
+      const renderManual = () => (
+        <div className="max-w-6xl mx-auto pb-20">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden p-10">
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h2 className="text-xl font-black">Manual do Usuário — Valloo GRC</h2>
+                <div className="muted">Guia rápido para utilização, configuração e auditoria.</div>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-8">
+              <div className="card p-6">
+                <h4 className="font-black">Como realizar uma análise</h4>
+                <ol className="muted small mt-2" style={{lineHeight:1.6}}>
+                  <li>Preencha identificação (PF/PJ).</li>
+                  <li>Adicione estrutura societária (sócios/dirigentes).</li>
+                  <li>Selecione produtos: Clique para ativar e preencha Carga/Frequência individualmente.</li>
+                  <li>Registre mídias, sanções e processos (importante indicar Polo e Status).</li>
+                  <li>Escreva o Parecer Final, indique os nomes dos responsáveis e gere o relatório.</li>
+                </ol>
+              </div>
+              <div className="card p-6">
+                <h4 className="font-black">Ajuste de parâmetros</h4>
+                <p className="muted small">Use a aba administrativa para editar pontuações e inventário. As pontuações de Produtos e Crimes agora são geridas separadamente.</p>
+              </div>
+              <div className="card p-6">
+                <h4 className="font-black">Exportação de relatórios</h4>
+                <p className="muted small">O botão "Emitir Relatório Oficial" salva a análise e abre o diálogo de impressão com layout executivo (cabeçalho, Estrutura Societária, Dossiê de Processos, Parecer Final, breakdown e assinatura).</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen">
+          <PrintReport stamp={printStamp} />
+
+          <header className="no-print bg-white border-b px-8 py-5 sticky top-0 z-50">
+            <div className="max-w-7xl mx-auto flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                {APP_LOGO_BASE64 ? (
+                    <img src={APP_LOGO_BASE64} className="h-10 w-auto rounded-lg" alt="Logo" />
+                ) : (
+                    <div className="w-10 h-10 bg-slate-900 rounded-xl flex items-center justify-center text-white font-black italic">V</div>
+                )}
+                <h1 className="text-lg font-black tracking-tighter">VALLOO <span className="text-blue-600">GRC PRO</span></h1>
+              </div>
+              <nav className="flex gap-2">
+                {['wizard','history','manual','admin'].map(t => (
+                  <button key={t} onClick={()=>setActiveTab(t)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === t ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-100'}`}>{t}</button>
+                ))}
+              </nav>
+            </div>
+          </header>
+
+          <main className="p-8 no-print">
+            { activeTab === 'wizard' ? renderWizard()
+              : activeTab === 'history' ? renderHistory()
+              : activeTab === 'manual' ? renderManual()
+              : activeTab === 'admin' ? <AdminPanel refreshAll={refreshAll} />
+              : null }
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+    seedIfEmpty();
+    </script>
+</body>
+</html>
