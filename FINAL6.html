@@ -58,6 +58,9 @@
     <script type="text/babel">
     const { useState, useEffect, useMemo } = React;
 
+    const normalizeText = (txt) => String(txt || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const parseRelationships = (txt) => Array.from(new Set(String(txt || '').split(',').map(x => x.trim()).filter(Boolean)));
+
     // --- CONFIGURAÇÃO DA LOGO (MANTIDA) ---
     const APP_LOGO_BASE64 = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSIjMDAyMDYwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iIzAwMjA2MCIgcng9IjIwIiAvPjx0ZXh0IHg9IjUwIiB5PSI3MCIgZm9udC1zaXplPSI2MCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXdlaWdodD0iYm9sZCIgZmlsbD0id2hpdGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlY8L3RleHQ+PC9zdmc+";
 
@@ -685,20 +688,15 @@
       });
       const [history, setHistory] = useState([]);
       const [historyView, setHistoryView] = useState('list');
+      const [historySearch, setHistorySearch] = useState('');
+      const [mapSearch, setMapSearch] = useState('');
+      const [socioRelDrafts, setSocioRelDrafts] = useState({});
+      const [dirRelDrafts, setDirRelDrafts] = useState({});
       const [products, setProducts] = useState([]);
       const [crimes, setCrimes] = useState([]);
       const [settings, setSettings] = useState(null);
       const [areas, setAreas] = useState([]); // lista dinâmica de áreas
       const [printStamp, setPrintStamp] = useState(0);
-
-      const generalChecklist = [
-        'Documentação societária validada',
-        'Beneficiário final identificado',
-        'Background de mídia concluído',
-        'Listas restritivas consultadas',
-        'Processos judiciais levantados',
-        'Parecer preliminar revisado'
-      ];
 
       const peopleForPep = [
         ...((formData.estrutura && formData.estrutura.socios) || []).map(s => ({ id: `S-${s.id}`, label: `${s.name} (Sócio)` })),
@@ -709,9 +707,6 @@
         const person = peopleForPep.find(p => p.id === pid);
         return person ? person.label : pid;
       });
-
-      // compact details toggle for relationship alerts
-      const [mapDetailsOpen, setMapDetailsOpen] = useState(false);
 
       useEffect(()=>{ (async ()=>{
         await seedIfEmpty();
@@ -740,10 +735,80 @@
       };
       const addLawsuit = (l) => setFormData(prev => ({ ...prev, lawsuits: [...(prev.lawsuits||[]), { ...l, id: uid() }] }));
       const removeLawsuit = (id) => setFormData(prev => ({ ...prev, lawsuits: (prev.lawsuits||[]).filter(x=>x.id!==id) }));
-      const addSocio = (socio) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), socios: [...(prev.estrutura?.socios||[]), { id: uid(), ...socio }] } }));
+      const addSocio = (socio) => setFormData(prev => ({
+        ...prev,
+        estrutura: {
+          ...(prev.estrutura||{}),
+          socios: [...(prev.estrutura?.socios||[]), { id: uid(), ...socio, relationships: parseRelationships(socio.relationships) }]
+        }
+      }));
       const removeSocio = (id) => setFormData(prev => ({ ...prev, pepPersonIds: (prev.pepPersonIds || []).filter(pid => pid !== `S-${id}`), estrutura: { ...(prev.estrutura||{}), socios: (prev.estrutura?.socios||[]).filter(s => s.id !== id) } }));
-      const addDir = (dir) => setFormData(prev => ({ ...prev, estrutura: { ...(prev.estrutura||{}), dirigentes: [...(prev.estrutura?.dirigentes||[]), { id: uid(), ...dir }] } }));
+      const addSocioRelationship = (id, relationship) => {
+        const rel = String(relationship || '').trim();
+        if(!rel) return;
+        setFormData(prev => ({
+          ...prev,
+          estrutura: {
+            ...(prev.estrutura || {}),
+            socios: (prev.estrutura?.socios || []).map(s => {
+              if(s.id !== id) return s;
+              const current = Array.isArray(s.relationships) ? s.relationships : parseRelationships(s.relationships);
+              return { ...s, relationships: Array.from(new Set([...current, rel])) };
+            })
+          }
+        }));
+      };
+      const removeSocioRelationship = (id, relationship) => {
+        const relNorm = normalizeText(relationship);
+        setFormData(prev => ({
+          ...prev,
+          estrutura: {
+            ...(prev.estrutura || {}),
+            socios: (prev.estrutura?.socios || []).map(s => {
+              if(s.id !== id) return s;
+              const current = Array.isArray(s.relationships) ? s.relationships : parseRelationships(s.relationships);
+              return { ...s, relationships: current.filter(r => normalizeText(r) !== relNorm) };
+            })
+          }
+        }));
+      };
+      const addDir = (dir) => setFormData(prev => ({
+        ...prev,
+        estrutura: {
+          ...(prev.estrutura||{}),
+          dirigentes: [...(prev.estrutura?.dirigentes||[]), { id: uid(), ...dir, relationships: parseRelationships(dir.relationships) }]
+        }
+      }));
       const removeDir = (id) => setFormData(prev => ({ ...prev, pepPersonIds: (prev.pepPersonIds || []).filter(pid => pid !== `D-${id}`), estrutura: { ...(prev.estrutura||{}), dirigentes: (prev.estrutura?.dirigentes||[]).filter(d => d.id !== id) } }));
+      const addDirRelationship = (id, relationship) => {
+        const rel = String(relationship || '').trim();
+        if(!rel) return;
+        setFormData(prev => ({
+          ...prev,
+          estrutura: {
+            ...(prev.estrutura || {}),
+            dirigentes: (prev.estrutura?.dirigentes || []).map(d => {
+              if(d.id !== id) return d;
+              const current = Array.isArray(d.relationships) ? d.relationships : parseRelationships(d.relationships);
+              return { ...d, relationships: Array.from(new Set([...current, rel])) };
+            })
+          }
+        }));
+      };
+      const removeDirRelationship = (id, relationship) => {
+        const relNorm = normalizeText(relationship);
+        setFormData(prev => ({
+          ...prev,
+          estrutura: {
+            ...(prev.estrutura || {}),
+            dirigentes: (prev.estrutura?.dirigentes || []).map(d => {
+              if(d.id !== id) return d;
+              const current = Array.isArray(d.relationships) ? d.relationships : parseRelationships(d.relationships);
+              return { ...d, relationships: current.filter(r => normalizeText(r) !== relNorm) };
+            })
+          }
+        }));
+      };
 
       const saveAnalysisToHistory = async () => {
         const entry = {
@@ -803,33 +868,90 @@
         setAreas(await db.areas.toArray());
       };
 
-      // compute compact relationship alerts: only matches between current form's socios/dirigentes and historical entries
-      const relationshipAlerts = useMemo(() => {
-        const map = {}; // key -> { name, type, companies:Set }
-        (history || []).forEach(h => {
-          const histSocios = ((h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.socios) || []).map(s => (s.name || '').trim()).filter(Boolean);
-          const histDir = ((h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.dirigentes) || []).map(d => (d.name || '').trim()).filter(Boolean);
-
-          (formData.estrutura.socios || []).forEach(s => {
-            const name = (s.name || '').trim();
-            if(name && histSocios.includes(name)) {
-              const key = `S::${name}`;
-              if(!map[key]) map[key] = { name, type: 'Sócio', companies: new Set() };
-              map[key].companies.add(h.name || ('#' + (h.id||'?')));
-            }
-          });
-
-          (formData.estrutura.dirigentes || []).forEach(d => {
-            const name = (d.name || '').trim();
-            if(name && histDir.includes(name)) {
-              const key = `D::${name}`;
-              if(!map[key]) map[key] = { name, type: 'Dirigente', companies: new Set() };
-              map[key].companies.add(h.name || ('#' + (h.id||'?')));
-            }
-          });
+      const filteredHistory = useMemo(() => {
+        const q = normalizeText(historySearch);
+        if(!q) return history;
+        return (history || []).filter(h => {
+          const names = [
+            h.name,
+            h.document,
+            h.level,
+            h.payload?.form?.parecerFinal,
+            ...(h.payload?.form?.estrutura?.socios || []).map(x => x.name),
+            ...(h.payload?.form?.estrutura?.dirigentes || []).map(x => x.name)
+          ].filter(Boolean).join(' | ');
+          return normalizeText(names).includes(q);
         });
-        return Object.values(map).map(v => ({ name: v.name, type: v.type, companies: Array.from(v.companies) }));
-      }, [history, formData]);
+      }, [history, historySearch]);
+
+      const relationshipGraph = useMemo(() => {
+        const personNodes = new Map();
+        const companyNodes = new Map();
+        const adjacency = new Map();
+
+        const link = (a, b) => {
+          if(!adjacency.has(a)) adjacency.set(a, new Set());
+          adjacency.get(a).add(b);
+        };
+
+        (history || []).forEach(h => {
+          const companyName = (h.name || `Análise #${h.id || '?'}`).trim();
+          const companyKey = `C::${normalizeText(companyName)}::${h.id || 'na'}`;
+          companyNodes.set(companyKey, { id: companyKey, label: companyName, kind: 'Empresa', date: h.date, score: h.score, level: h.level });
+
+          const addPerson = (person, role) => {
+            const personName = (person?.name || '').trim();
+            if(!personName) return;
+            const pKey = `P::${normalizeText(personName)}`;
+            const found = personNodes.get(pKey) || { id: pKey, label: personName, roles: new Set(), links: new Set(), relationships: new Set() };
+            found.roles.add(role);
+            found.links.add(companyKey);
+            const relList = Array.isArray(person.relationships) ? person.relationships : parseRelationships(person.relationships);
+            relList.forEach(r => found.relationships.add(r));
+            personNodes.set(pKey, found);
+            link(pKey, companyKey); link(companyKey, pKey);
+
+            relList.forEach(rel => {
+              const relKey = `R::${normalizeText(rel)}`;
+              if(!personNodes.has(relKey)) {
+                personNodes.set(relKey, { id: relKey, label: rel, roles: new Set(['Relacionamento']), links: new Set(), relationships: new Set() });
+              }
+              link(pKey, relKey); link(relKey, pKey);
+            });
+          };
+
+          (h.payload?.form?.estrutura?.socios || []).forEach(s => addPerson(s, 'Sócio'));
+          (h.payload?.form?.estrutura?.dirigentes || []).forEach(d => addPerson(d, 'Administrador'));
+        });
+
+
+        const cards = Array.from(personNodes.values()).map(person => {
+          const linkIds = Array.from(person.links || []);
+          return {
+            ...person,
+            roles: Array.from(person.roles || []),
+            relationships: Array.from(person.relationships || []),
+            linkIds,
+            companies: linkIds.map(k => companyNodes.get(k)?.label).filter(Boolean),
+            degree: (adjacency.get(person.id) || new Set()).size
+          };
+        }).filter(p => p.companies.length > 0).sort((a,b) => b.degree - a.degree);
+
+        const q = normalizeText(mapSearch);
+        const filteredCards = !q ? cards : cards.filter(card => {
+          const text = [card.label, ...(card.roles || []), ...(card.relationships || []), ...(card.companies || [])].join(' | ');
+          return normalizeText(text).includes(q);
+        });
+
+        return {
+          totals: {
+            companies: companyNodes.size,
+            people: cards.length,
+            connections: cards.reduce((acc, p) => acc + p.degree, 0)
+          },
+          cards: filteredCards
+        };
+      }, [history, mapSearch]);
 
       /* PrintReport: REMOVED the Mapa de Relacionamentos section entirely so map is not printed. (Request preserved) */
       const PrintReport = ({ stamp }) => (
@@ -1053,29 +1175,13 @@
                     </select>
                   </div>
 
-                  <div className="col-span-full p-5 border-2 border-slate-100 rounded-3xl bg-slate-50">
-                    <div className="text-[10px] font-black uppercase text-blue-600 tracking-widest mb-3">Checklist de Diligência</div>
-                    <div className="grid md:grid-cols-2 gap-2">
-                      {generalChecklist.map(item => (
-                        <label key={item} className="flex items-center gap-2 text-xs font-bold text-slate-700">
-                          <input
-                            type="checkbox"
-                            checked={(formData.checkItems || []).includes(item)}
-                            onChange={e=>setFormData(prev=>({
-                              ...prev,
-                              checkItems: e.target.checked
-                                ? [...(prev.checkItems || []), item]
-                                : (prev.checkItems || []).filter(x => x !== item)
-                            }))}
-                          />
-                          {item}
-                        </label>
-                      ))}
-                    </div>
-                    <label className="mt-4 flex items-center gap-2 text-xs font-black text-slate-800">
-                      <input type="checkbox" checked={!!formData.hasForeignPartner} onChange={e=>setFormData(prev=>({...prev, hasForeignPartner: e.target.checked}))} />
+                  <div className="col-span-full p-5 border-2 border-blue-200 rounded-3xl bg-blue-50">
+                    <div className="text-[10px] font-black uppercase text-blue-700 tracking-widest mb-3">Alerta societário relevante</div>
+                    <label className="flex items-center gap-3 text-sm font-black text-slate-800">
+                      <input type="checkbox" className="w-5 h-5 accent-blue-600" checked={!!formData.hasForeignPartner} onChange={e=>setFormData(prev=>({...prev, hasForeignPartner: e.target.checked}))} />
                       Existe sócio estrangeiro ou estrutura off-shore
                     </label>
+                    <div className="mt-2 text-xs text-slate-600">Quando marcado, o fator de risco é majorado automaticamente conforme parâmetros administrativos.</div>
                   </div>
 
                   {/* Área de Negócio: preenchida dinamicamente a partir do DB 'areas' (requisito) */}
@@ -1168,42 +1274,90 @@
                     <div className="grid md:grid-cols-2 gap-4">
                       <div className="p-4 border rounded-2xl">
                         <h4 className="font-black text-sm mb-2">Adicionar Sócio / Beneficiário Final</h4>
-                        <div style={{display:'flex',gap:8}}>
-                          <input placeholder="Nome" className="border p-2 rounded flex-1" value={formData._newSocioName || ''} onChange={e=>setFormData(prev=>({...prev, _newSocioName: e.target.value}))}/>
-                          <input placeholder="Idade" className="border p-2 rounded w-24" value={formData._newSocioAge || ''} onChange={e=>setFormData(prev=>({...prev, _newSocioAge: e.target.value}))}/>
-                          <button className="button-primary" onClick={()=>{
-                            if(!formData._newSocioName) return alert('Nome obrigatório');
-                            addSocio({ name: formData._newSocioName, age: formData._newSocioAge });
-                            setFormData(prev=>({...prev, _newSocioName:'', _newSocioAge:''}));
-                          }}>Adicionar</button>
+                        <div className="grid md:grid-cols-2 gap-2">
+                          <input placeholder="Nome" className="border p-2 rounded" value={formData._newSocioName || ''} onChange={e=>setFormData(prev=>({...prev, _newSocioName: e.target.value}))}/>
+                          <input placeholder="Idade" className="border p-2 rounded" value={formData._newSocioAge || ''} onChange={e=>setFormData(prev=>({...prev, _newSocioAge: e.target.value}))}/>
                         </div>
-                        <div className="mt-4 max-h-40 overflow-y-auto custom-scroll">
-                          {(formData.estrutura?.socios || []).map(s => (
-                            <div key={s.id} className="flex justify-between items-center p-2 border rounded mb-2">
-                              <div><div style={{fontWeight:700}}>{s.name}</div><div className="muted small">Idade: {s.age || '-'}</div></div>
-                              <button className="button-ghost" onClick={()=>removeSocio(s.id)}>Rem</button>
+                        <button className="button-primary mt-2" onClick={()=>{
+                          if(!formData._newSocioName) return alert('Nome obrigatório');
+                          addSocio({ name: formData._newSocioName, age: formData._newSocioAge });
+                          setFormData(prev=>({...prev, _newSocioName:'', _newSocioAge:''}));
+                        }}>Adicionar Sócio</button>
+                        <div className="mt-4 max-h-60 overflow-y-auto custom-scroll space-y-2">
+                          {(formData.estrutura?.socios || []).length === 0 && <div className="muted">Nenhum sócio cadastrado.</div>}
+                          {(formData.estrutura?.socios || []).map(s => {
+                            const rels = Array.isArray(s.relationships) ? s.relationships : parseRelationships(s.relationships);
+                            return (
+                            <div key={s.id} className="p-3 border rounded-xl bg-slate-50">
+                              <div className="flex justify-between items-start gap-2">
+                                <div>
+                                  <div style={{fontWeight:700}}>{s.name}</div>
+                                  <div className="muted small">Idade: {s.age || '-'}</div>
+                                </div>
+                                <button className="button-ghost" onClick={()=>removeSocio(s.id)}>Rem</button>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {rels.length === 0 && <span className="text-[11px] text-slate-400">Sem relacionamentos vinculados.</span>}
+                                {rels.map((rel, idx) => (
+                                  <span key={idx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-blue-100 text-blue-800 font-bold">
+                                    {rel}
+                                    <button type="button" onClick={()=>removeSocioRelationship(s.id, rel)} className="text-blue-700">×</button>
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="mt-2 flex gap-2">
+                                <input placeholder="Adicionar relacionamento deste sócio" className="border p-2 rounded flex-1 text-xs" value={socioRelDrafts[s.id] || ''} onChange={e=>setSocioRelDrafts(prev=>({...prev, [s.id]: e.target.value}))}/>
+                                <button className="button-ghost" onClick={()=>{
+                                  addSocioRelationship(s.id, socioRelDrafts[s.id]);
+                                  setSocioRelDrafts(prev=>({...prev, [s.id]: ''}));
+                                }}>Vincular</button>
+                              </div>
                             </div>
-                          ))}
+                          )})}
                         </div>
                       </div>
                       <div className="p-4 border rounded-2xl">
                         <h4 className="font-black text-sm mb-2">Adicionar Dirigente / Administrador</h4>
-                        <div style={{display:'flex',gap:8}}>
-                          <input placeholder="Nome" className="border p-2 rounded flex-1" value={formData._newDirName || ''} onChange={e=>setFormData(prev=>({...prev, _newDirName: e.target.value}))}/>
-                          <input placeholder="Cargo" className="border p-2 rounded w-36" value={formData._newDirRole || ''} onChange={e=>setFormData(prev=>({...prev, _newDirRole: e.target.value}))}/>
-                          <button className="button-primary" onClick={()=>{
-                            if(!formData._newDirName) return alert('Nome obrigatório');
-                            addDir({ name: formData._newDirName, role: formData._newDirRole });
-                            setFormData(prev=>({...prev, _newDirName:'', _newDirRole:''}));
-                          }}>Adicionar</button>
+                        <div className="grid md:grid-cols-2 gap-2">
+                          <input placeholder="Nome" className="border p-2 rounded" value={formData._newDirName || ''} onChange={e=>setFormData(prev=>({...prev, _newDirName: e.target.value}))}/>
+                          <input placeholder="Cargo" className="border p-2 rounded" value={formData._newDirRole || ''} onChange={e=>setFormData(prev=>({...prev, _newDirRole: e.target.value}))}/>
                         </div>
-                        <div className="mt-4 max-h-40 overflow-y-auto custom-scroll">
-                          {(formData.estrutura?.dirigentes || []).map(d => (
-                            <div key={d.id} className="flex justify-between items-center p-2 border rounded mb-2">
-                              <div><div style={{fontWeight:700}}>{d.name}</div><div className="muted small">Cargo: {d.role || '-'}</div></div>
-                              <button className="button-ghost" onClick={()=>removeDir(d.id)}>Rem</button>
+                        <button className="button-primary mt-2" onClick={()=>{
+                          if(!formData._newDirName) return alert('Nome obrigatório');
+                          addDir({ name: formData._newDirName, role: formData._newDirRole });
+                          setFormData(prev=>({...prev, _newDirName:'', _newDirRole:''}));
+                        }}>Adicionar Administrador</button>
+                        <div className="mt-4 max-h-60 overflow-y-auto custom-scroll space-y-2">
+                          {(formData.estrutura?.dirigentes || []).length === 0 && <div className="muted">Nenhum administrador cadastrado.</div>}
+                          {(formData.estrutura?.dirigentes || []).map(d => {
+                            const rels = Array.isArray(d.relationships) ? d.relationships : parseRelationships(d.relationships);
+                            return (
+                            <div key={d.id} className="p-3 border rounded-xl bg-slate-50">
+                              <div className="flex justify-between items-start gap-2">
+                                <div>
+                                  <div style={{fontWeight:700}}>{d.name}</div>
+                                  <div className="muted small">Cargo: {d.role || '-'}</div>
+                                </div>
+                                <button className="button-ghost" onClick={()=>removeDir(d.id)}>Rem</button>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {rels.length === 0 && <span className="text-[11px] text-slate-400">Sem relacionamentos vinculados.</span>}
+                                {rels.map((rel, idx) => (
+                                  <span key={idx} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full bg-indigo-100 text-indigo-800 font-bold">
+                                    {rel}
+                                    <button type="button" onClick={()=>removeDirRelationship(d.id, rel)} className="text-indigo-700">×</button>
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="mt-2 flex gap-2">
+                                <input placeholder="Adicionar relacionamento deste administrador" className="border p-2 rounded flex-1 text-xs" value={dirRelDrafts[d.id] || ''} onChange={e=>setDirRelDrafts(prev=>({...prev, [d.id]: e.target.value}))}/>
+                                <button className="button-ghost" onClick={()=>{
+                                  addDirRelationship(d.id, dirRelDrafts[d.id]);
+                                  setDirRelDrafts(prev=>({...prev, [d.id]: ''}));
+                                }}>Vincular</button>
+                              </div>
                             </div>
-                          ))}
+                          )})}
                         </div>
                       </div>
                     </div>
@@ -1359,15 +1513,13 @@
       );
 
       const renderHistory = () => {
-        // prepare compact alerts summary for UI (non-print)
-        const alerts = relationshipAlerts;
         return (
           <div className="max-w-6xl mx-auto pb-20">
             <div className="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden p-10">
               <div className="flex justify-between items-center mb-6">
                 <div>
                   <h2 className="text-xl font-black">Histórico de Análises</h2>
-                  <div className="muted">Exporte, importe ou revise análises salvas localmente.</div>
+                  <div className="muted">Exporte, pesquise e navegue pelos vínculos salvos localmente.</div>
                 </div>
                 <div className="flex gap-3">
                   <button className="button-ghost" onClick={exportHistoryCSV}>Exportar CSV</button>
@@ -1382,13 +1534,14 @@
 
               {historyView === 'list' ? (
                 <div className="space-y-3">
-                  {history.length === 0 && <div className="muted">Nenhuma análise salva.</div>}
-                  {history.map(h => (
-                    <div key={h.id} className="p-4 bg-white border-2 border-slate-100 rounded-2xl flex justify-between items-center">
+                  <input className="w-full border-2 border-slate-100 p-3 rounded-xl" placeholder="Buscar no histórico por empresa, documento, sócio, administrador ou parecer..." value={historySearch} onChange={e=>setHistorySearch(e.target.value)} />
+                  {filteredHistory.length === 0 && <div className="muted">Nenhuma análise encontrada para o filtro informado.</div>}
+                  {filteredHistory.map(h => (
+                    <div key={h.id} className="p-4 bg-white border-2 border-slate-100 rounded-2xl flex justify-between items-center gap-3">
                       <div>
                         <div style={{fontWeight:800}}>{h.name} — {h.document}</div>
                         <div className="muted small">{new Date(h.date).toLocaleString()} • Score: <strong>{h.score}</strong> • {h.level}</div>
-                        {h.payload && h.payload.form && h.payload.form.parecerFinal && (
+                        {h.payload?.form?.parecerFinal && (
                           <div className="muted small" style={{marginTop:6}}>
                             <strong>Parecer:</strong> {String(h.payload.form.parecerFinal).slice(0,120)}{String(h.payload.form.parecerFinal).length>120?'...':''}
                           </div>
@@ -1403,47 +1556,34 @@
                   ))}
                 </div>
               ) : (
-                <div>
-                  {/* Compact summary alert */}
-                  <div style={{marginBottom:12}}>
-                    { alerts.length > 0 ? (
-                      <div>
-                        <div className="compact-alert">
-                          <div style={{display:'flex',alignItems:'center',gap:12}}>
-                            <div className="compact-pill">{alerts.length} vínculos</div>
-                            <div style={{fontWeight:800}}>Existem vínculos entre os sócios/dirigentes desta análise e registros no histórico.</div>
-                          </div>
-                          <div>
-                            <button className="button-ghost" onClick={()=>setMapDetailsOpen(v=>!v)}>{mapDetailsOpen ? 'Ocultar detalhes' : 'Ver detalhes'}</button>
-                          </div>
-                        </div>
-
-                        {/* details (non-print only to avoid clutter in PDF) */}
-                        { mapDetailsOpen && (
-                          <div className="compact-details no-print" style={{marginTop:8}}>
-                            <ul>
-                              { alerts.map((a, idx) => (
-                                <li key={idx}><strong>{a.type}:</strong> {a.name} — vinculado em: {a.companies.join(', ')}</li>
-                              )) }
-                            </ul>
-                          </div>
-                        ) }
-                      </div>
-                    ) : (
-                      <div className="muted">Nenhuma relação encontrada</div>
-                    )}
+                <div className="space-y-4">
+                  <div className="grid md:grid-cols-3 gap-3">
+                    <div className="p-4 border rounded-2xl bg-slate-50"><div className="muted">Empresas mapeadas</div><div className="text-2xl font-black">{relationshipGraph.totals.companies}</div></div>
+                    <div className="p-4 border rounded-2xl bg-slate-50"><div className="muted">Pessoas conectadas</div><div className="text-2xl font-black">{relationshipGraph.totals.people}</div></div>
+                    <div className="p-4 border rounded-2xl bg-slate-50"><div className="muted">Conexões registradas</div><div className="text-2xl font-black">{relationshipGraph.totals.connections}</div></div>
                   </div>
 
-                  <table className="report-table" style={{marginTop:8}}>
-                    <thead><tr><th>Empresa</th><th>Sócios</th><th>Dirigentes</th></tr></thead>
-                    <tbody>
-                      {history.map((h,i) => {
-                        const socios = (h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.socios || []).map(s => s.name).join(', ') || '-';
-                        const dirs   = (h.payload && h.payload.form && h.payload.form.estrutura && h.payload.form.estrutura.dirigentes || []).map(d => d.name).join(', ') || '-';
-                        return (<tr key={i}><td>{h.name}</td><td>{socios}</td><td>{dirs}</td></tr>);
-                      })}
-                    </tbody>
-                  </table>
+                  <input className="w-full border-2 border-slate-100 p-3 rounded-xl" placeholder="Buscar no mapa por pessoa, papel, empresa ou relacionamento..." value={mapSearch} onChange={e=>setMapSearch(e.target.value)} />
+
+                  {relationshipGraph.cards.length === 0 ? (
+                    <div className="muted">Nenhum relacionamento encontrado para o filtro informado.</div>
+                  ) : (
+                    <div className="grid md:grid-cols-2 gap-3">
+                      {relationshipGraph.cards.map(card => (
+                        <div key={card.id} className="p-4 border rounded-2xl bg-white">
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="font-black text-slate-800">{card.label}</div>
+                              <div className="muted">{(card.roles || []).join(' • ') || 'Sem papel definido'}</div>
+                            </div>
+                            <div className="text-[10px] px-3 py-1 rounded-full bg-blue-50 text-blue-700 font-black">{card.degree} conexões</div>
+                          </div>
+                          <div className="mt-3 text-xs text-slate-600"><strong>Empresas relacionadas:</strong> {(card.companies || []).join(', ') || '-'}</div>
+                          <div className="mt-2 text-xs text-slate-600"><strong>Relacionamentos declarados:</strong> {(card.relationships || []).join(', ') || '-'}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1466,16 +1606,16 @@
               <div className="card p-6">
                 <h4 className="font-black">Como realizar uma análise</h4>
                 <ol className="muted small mt-2" style={{lineHeight:1.6}}>
-                  <li>Preencha identificação (PF/PJ).</li>
-                  <li>Adicione estrutura societária (sócios/dirigentes).</li>
-                  <li>Selecione produtos: Clique para ativar e preencha Carga/Frequência individualmente.</li>
-                  <li>Registre mídias, sanções e processos (importante indicar Polo e Status).</li>
-                  <li>Escreva o Parecer Final, indique os nomes dos responsáveis e gere o relatório.</li>
+                  <li>Preencha identificação (PF/PJ) e dados operacionais da análise.</li>
+                  <li>Marque o alerta de sócio estrangeiro/off-shore quando aplicável.</li>
+                  <li>Cadastre sócios/administradores e informe relacionamentos individualmente (separados por vírgula).</li>
+                  <li>Selecione produtos, mídias, sanções e processos para compor o score dinâmico.</li>
+                  <li>Finalize com parecer, responsáveis e emissão de relatório.</li>
                 </ol>
               </div>
               <div className="card p-6">
-                <h4 className="font-black">Ajuste de parâmetros</h4>
-                <p className="muted small">Use a aba administrativa para editar pontuações e inventário. As pontuações de Produtos e Crimes agora são geridas separadamente.</p>
+                <h4 className="font-black">Histórico inteligente e mapa</h4>
+                <p className="muted small">Na aba Histórico há duas buscas independentes: uma para análises salvas e outra para o mapa de relacionamentos. O mapa consolida dados já existentes sem depender de nova análise, exibindo pessoas conectadas, empresas relacionadas e conexões declaradas.</p>
               </div>
               <div className="card p-6">
                 <h4 className="font-black">Exportação de relatórios</h4>
