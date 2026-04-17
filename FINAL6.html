@@ -90,7 +90,7 @@
           { id: 'v_classic', name: 'Conta Digital - Classic', category: 'Conta Digital', risk: 'Médio' },
           { id: 'v_exclusive', name: 'Conta Digital - Exclusive', category: 'Conta Digital', risk: 'Médio' },
           { id: 'v_connect', name: 'Conta Digital - Connect', category: 'Conta Digital', risk: 'Médio' },
-          { id: 'v_prem_cash', name: 'Premiação (Cash/Saque)', category: 'Campanha', risk: 'Alto' },
+          { id: 'v_prem_cash', name: 'Premiação Cash', category: 'Campanha', risk: 'Alto' },
           { id: 'v_corp', name: 'Cartão Corporativo', category: 'Cartão Corporativo', risk: 'Médio' },
           { id: 'v_white', name: 'White Label - Conta', category: 'White Label', risk: 'Alto' }
         ];
@@ -115,11 +115,27 @@
       if(!sc) {
         const defaultSettings = {
           id: 'default',
+          riskWeights: { client: 0.42, product: 0.33, channel: 0.10, geography: 0.15 },
+          controlEffectiveness: 0.20,
+          nonCriminalRule: { stepN: 3, deltaPoints: 6, maxSteps: 8 },
+          geographyUFPoints: {
+            AC: 48, AL: 44, AP: 45, AM: 50, BA: 52, CE: 46, DF: 50, ES: 41, GO: 43, MA: 47,
+            MT: 46, MS: 44, MG: 42, PA: 49, PB: 41, PR: 39, PE: 48, PI: 43, RJ: 58, RN: 41,
+            RS: 38, RO: 45, RR: 46, SC: 35, SP: 40, SE: 42, TO: 44
+          },
+          channelScores: { digital: 12, presencial: 35, correspondente: 28, terceiro: 45 },
           puntos: {
             prod_baixo:2, prod_medio:7, prod_alto:15,
             crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
             quadro_moderada:10, quadro_complexa:25, pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
             area_baixo:3, area_medio:8, area_alto:18
+          },
+          crimeTypePoints: {
+            'Lavagem de Dinheiro': 78,
+            'Estelionato': 55,
+            'Tráfico de Drogas': 95,
+            'Corrupção (Ativa/Passiva)': 82,
+            'Organização Criminosa': 88
           },
           multipliers: { pepFinance:1.15, estrangeiro:1.12, multiplosProcessos:1.08 },
           categoryScore: { low:8, medium:25, high:60 },
@@ -165,6 +181,53 @@
       }
     }
 
+
+    const DEFAULT_UF_POINTS = {
+      AC: 48, AL: 44, AP: 45, AM: 50, BA: 52, CE: 46, DF: 50, ES: 41, GO: 43, MA: 47,
+      MT: 46, MS: 44, MG: 42, PA: 49, PB: 41, PR: 39, PE: 48, PI: 43, RJ: 58, RN: 41,
+      RS: 38, RO: 45, RR: 46, SC: 35, SP: 40, SE: 42, TO: 44
+    };
+
+
+    const DEFAULT_PUNTOS = {
+      prod_baixo:2, prod_medio:7, prod_alto:15,
+      crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
+      quadro_moderada:10, quadro_complexa:25, pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
+      area_baixo:3, area_medio:8, area_alto:18
+    };
+    const DEFAULT_THRESHOLDS = { baixo:20, medio:45, alto:75, critico:90 };
+    const DEFAULT_CHANNEL_SCORES = { digital: 12, presencial: 35, correspondente: 28, terceiro: 45 };
+
+    function ensureSettingsShape(raw) {
+      const base = raw || {};
+      const weights = base.riskWeights || { client: 0.42, product: 0.33, channel: 0.10, geography: 0.15 };
+      const sum = (Number(weights.client)||0) + (Number(weights.product)||0) + (Number(weights.channel)||0) + (Number(weights.geography)||0);
+      const normalized = sum > 0 ? {
+        client: (Number(weights.client)||0) / sum,
+        product: (Number(weights.product)||0) / sum,
+        channel: (Number(weights.channel)||0) / sum,
+        geography: (Number(weights.geography)||0) / sum
+      } : { client: 0.42, product: 0.33, channel: 0.10, geography: 0.15 };
+      return {
+        ...base,
+        id: 'default',
+        riskWeights: normalized,
+        controlEffectiveness: Math.max(0, Math.min(1, Number(base.controlEffectiveness ?? 0.2))),
+        nonCriminalRule: {
+          stepN: Math.max(1, Number(base.nonCriminalRule?.stepN) || 3),
+          deltaPoints: Math.max(0, Number(base.nonCriminalRule?.deltaPoints) || 6),
+          maxSteps: Math.max(1, Number(base.nonCriminalRule?.maxSteps) || 8)
+        },
+        geographyUFPoints: { ...DEFAULT_UF_POINTS, ...(base.geographyUFPoints || {}) },
+        puntos: { ...DEFAULT_PUNTOS, ...(base.puntos || {}) },
+        thresholds: { ...DEFAULT_THRESHOLDS, ...(base.thresholds || {}) },
+        multipliers: { pepFinance:1.15, estrangeiro:1.12, multiplosProcessos:1.08, ...(base.multipliers || {}) },
+        categoryScore: { low:8, medium:25, high:60, ...(base.categoryScore || {}) },
+        channelScores: { ...DEFAULT_CHANNEL_SCORES, ...(base.channelScores || {}) },
+        crimeTypePoints: base.crimeTypePoints || {}
+      };
+    }
+
     function sanitizeLink(s) {
       if(!s) return null;
       try { return (new URL(s)).href; }
@@ -179,102 +242,238 @@
       return <i data-lucide={name} className={className}></i>;
     };
 
-    // calcula score (mantido, usa form.areaCategoria para lógica)
+    const RISK_CLASSES = ["Baixo", "Médio", "Alto", "Inadmissível"];
+    const classToSeverity = (cls) => ({ "Baixo":0, "Médio":1, "Alto":2, "Inadmissível":3 }[cls] ?? 0);
+    const severityToClass = (sev) => RISK_CLASSES[Math.max(0, Math.min(3, sev))];
+    const clamp = (n, min, max) => Math.max(min, Math.min(max, Number(n) || 0));
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+    function normalizeWeights(weights) {
+      const raw = {
+        client: Number(weights?.client) || 0,
+        product: Number(weights?.product) || 0,
+        channel: Number(weights?.channel) || 0,
+        geography: Number(weights?.geography) || 0
+      };
+      const sum = raw.client + raw.product + raw.channel + raw.geography;
+      if (sum <= 0) return { normalized: { client:0.40, product:0.30, channel:0.15, geography:0.15 }, wasNormalized: true, originalSum: sum };
+      const normalized = {
+        client: raw.client / sum,
+        product: raw.product / sum,
+        channel: raw.channel / sum,
+        geography: raw.geography / sum
+      };
+      return { normalized, wasNormalized: Math.abs(sum - 1) > 0.0001, originalSum: sum };
+    }
+
+    function classifyRiskByScore(score) {
+      const s = clamp(score, 0, 100);
+      if (s <= 25) return 'Baixo';
+      if (s <= 50) return 'Médio';
+      if (s <= 75) return 'Alto';
+      return 'Inadmissível';
+    }
+
+    function riskByAreaCategory(cat) {
+      if (cat === 'Inadmissível') return 100;
+      if (cat === 'Alto') return 75;
+      if (cat === 'Médio') return 50;
+      return 25;
+    }
+
+    function mapProductRiskToScore(risk) {
+      if (risk === 'Alto') return 75;
+      if (risk === 'Médio') return 50;
+      return 25;
+    }
+
+    function computeClientFactor(form) {
+      let score = 20;
+      if (form.complexity === 'Moderada') score += 20;
+      if (form.complexity === 'Complexa') score += 35;
+      if (form.pepType !== 'Nao' && (form.pepPersonIds || []).length > 0) score += 25;
+      if (form.hasForeignPartner) score += 20;
+      if ((form.filialCount || 0) > 5) score += 10;
+      return clamp(score, 0, 100);
+    }
+
+    function computeProductFactor(form, productsList) {
+      const selected = form.products || [];
+      if (!selected.length) return 0;
+      let totalWeight = 0;
+      let weightedRisk = 0;
+      selected.forEach(sel => {
+        const prod = productsList.find(p => p.id === sel.id);
+        if (!prod) return;
+        const load = Math.max(0, Number(sel.load) || 0);
+        const loadWeight = 1 + Math.log10(1 + load);
+        totalWeight += loadWeight;
+        weightedRisk += mapProductRiskToScore(prod.risk) * loadWeight;
+      });
+      if (!totalWeight) return 0;
+      return clamp(weightedRisk / totalWeight, 0, 100);
+    }
+
+    function computeChannelFactor(form, settings) {
+      const scores = settings?.channelScores || DEFAULT_CHANNEL_SCORES;
+      const channelType = form.channelType || 'digital';
+      const channelBase = clamp(Number(scores[channelType]) || Number(scores.digital) || 12, 0, 100);
+      const periodicityAdj = { diaria: 8, semanal: 6, mensal: 3, unica: 0 };
+      const selected = form.products || [];
+      const avgAdj = selected.length
+        ? selected.reduce((acc, sel) => acc + (periodicityAdj[sel.periodicity] || 2), 0) / selected.length
+        : 2;
+      // Canal digital é predominante no negócio: impacto deliberadamente baixo/moderado para evitar inflar score.
+      return clamp(channelBase + avgAdj, 0, 45);
+    }
+
+    function computeGeographyFactor(form, settings) {
+      const ufPoints = settings?.geographyUFPoints || {};
+      const ufScore = clamp(Number(ufPoints[form.state]) || 40, 0, 100);
+      const areaScore = riskByAreaCategory(form.areaCategoria);
+      return clamp((ufScore * 0.7) + (areaScore * 0.3), 0, 100);
+    }
+
+    function applyRiscBalance(analystClass, appClass, appScore) {
+      const analyst = analystClass || 'Baixo';
+      if (analyst === 'Inadmissível') return { finalClass: 'Inadmissível', finalScore: 100 };
+      // Matriz RISC conservadora: resultado por frente = maior severidade entre Analista e App.
+      const finalSev = Math.max(classToSeverity(analyst), classToSeverity(appClass));
+      const floorByAnalyst = [12, 38, 63, 100][classToSeverity(analyst)] || 12;
+      return { finalClass: severityToClass(finalSev), finalScore: round2(Math.max(floorByAnalyst, appScore)) };
+    }
+
     function calculateRiskAndBreakdown(form, productsList, crimesList, settings) {
-      if (form.areaCategoria === 'Inadmissível') {
-        const breakdown = { products:[], quadro:0, pep:0, media:0, sanctions:0, processos:[], totalBeforeMultipliers:100, area:0 };
-        return { score: 100, level: "Risco Inadmissível", isCritical: true, breakdown };
-      }
+      const normalizedWeights = normalizeWeights(settings?.riskWeights);
+      const E = clamp(settings?.controlEffectiveness ?? 0.2, 0, 1);
 
-      let score = 0;
-      let isCritical = false;
-      const breakdown = { products:[], quadro:0, pep:0, media:0, sanctions:0, processos:[], area:0, totalBeforeMultipliers:0 };
-
-      const pts = (settings && settings.puntos) ? settings.puntos : {
-        prod_baixo:2, prod_medio:7, prod_alto:15,
-        crime_baixo:5, crime_medio:10, crime_alto:20, crime_inadmissivel:50,
-        quadro_moderada:10, quadro_complexa:25,
-        pep:20, midia:15, sancao:40, processo_criminal:20, processo_outro:5,
-        area_baixo:3, area_medio:8, area_alto:18
+      const factorScores = {
+        client: computeClientFactor(form),
+        product: computeProductFactor(form, productsList),
+        channel: computeChannelFactor(form, settings),
+        geography: computeGeographyFactor(form, settings)
       };
 
-      (form.products || []).forEach(selItem => {
-        const prodDef = productsList.find(p => p.id === selItem.id);
-        if(!prodDef) return;
+      const productsBreakdown = (form.products || []).map(sel => {
+        const prod = productsList.find(p => p.id === sel.id);
+        if(!prod) return null;
+        return {
+          id: sel.id,
+          name: prod.name,
+          category: prod.category,
+          risk: prod.risk,
+          load: sel.load,
+          periodicity: sel.periodicity,
+          contrib: round2(mapProductRiskToScore(prod.risk))
+        };
+      }).filter(Boolean);
 
-        let contrib = 0;
-        if (prodDef.risk === 'Alto') contrib = pts.prod_alto;
-        else if (prodDef.risk === 'Médio') contrib = pts.prod_medio;
-        else contrib = pts.prod_baixo;
+      const weightedSum = (
+        factorScores.client * normalizedWeights.normalized.client +
+        factorScores.product * normalizedWeights.normalized.product +
+        factorScores.channel * normalizedWeights.normalized.channel +
+        factorScores.geography * normalizedWeights.normalized.geography
+      );
 
-        score += contrib;
-        breakdown.products.push({ id: selItem.id, name: prodDef.name, category: prodDef.category, risk: prodDef.risk, load: selItem.load, periodicity: selItem.periodicity, contrib });
-      });
+      const baseResidual = clamp(weightedSum * (1 - E), 0, 100);
 
-      if (form.complexity === 'Moderada') { score += pts.quadro_moderada; breakdown.quadro = pts.quadro_moderada; }
-      if (form.complexity === 'Complexa') { score += pts.quadro_complexa; breakdown.quadro = pts.quadro_complexa; }
+      const crimeTypePoints = settings?.crimeTypePoints || {};
+      const nonCriminalRule = settings?.nonCriminalRule || { stepN: 3, deltaPoints: 6, maxSteps: 8 };
+      const stepN = Math.max(1, Number(nonCriminalRule.stepN) || 3);
+      const deltaPoints = clamp(Number(nonCriminalRule.deltaPoints) || 6, 0, 50);
+      const maxSteps = Math.max(1, Number(nonCriminalRule.maxSteps) || 8);
 
-      if (form.pepType !== 'Nao' && (form.pepPersonIds || []).length > 0) { score += pts.pep; breakdown.pep = pts.pep; }
+      const processes = form.lawsuits || [];
+      const passivoNonCriminal = processes.filter(proc => proc.analyzedRole === 'Passivo' && !String(proc.type || '').toLowerCase().includes('criminal'));
+      const nonCriminalSteps = Math.min(maxSteps, Math.floor(passivoNonCriminal.length / stepN));
+      const nonCriminalIncrement = round2(nonCriminalSteps * deltaPoints);
 
-      if (form.negativeMedia) {
-        const n = (form.mediaLinks || []).length || 1;
-        const add = pts.midia * n;
-        score += add;
-        breakdown.media = add;
-      }
-      if (form.hasForeignPartner && settings?.multipliers?.estrangeiro) {
-        score *= settings.multipliers.estrangeiro;
-      }
+      let crimesRepImpact = 0;
+      let crimesPldImpact = 0;
+      let hasInadmissibleCrime = false;
 
-      if (form.sanctionsList) {
-        const n = (form.sanctionLinks || []).length || 1;
-        const add = pts.sancao * n;
-        score += add;
-        breakdown.sanctions = add;
-      }
-
-      (form.lawsuits || []).forEach(proc => {
-        let procContrib = 0;
-        const papel = (proc.analyzedRole || 'Passivo');
-
-        if (papel === 'Passivo') {
-          if ((proc.type || '').toLowerCase().includes('criminal')) {
-            const crimeObj = crimesList.find(c => c.nome === proc.crimeNome);
-            let baseValue = pts.processo_criminal;
-            if(crimeObj) {
-               if(crimeObj.risco === 'Inadmissível') { isCritical = true; baseValue = pts.crime_inadmissivel; }
-               else if(crimeObj.risco === 'Alto') baseValue = pts.crime_alto;
-               else if(crimeObj.risco === 'Médio') baseValue = pts.crime_medio;
-               else baseValue = pts.crime_baixo;
-            }
-            if (proc.status === 'Arquivado') {
-                procContrib = baseValue * 0.10; // arquivado reduz bastante (10% do base) — regra mantida
-            } else {
-                procContrib = baseValue;
-            }
-          } else {
-            procContrib = pts.processo_outro;
+      const processBreakdown = processes.map(proc => {
+        const isPassivo = proc.analyzedRole === 'Passivo';
+        const isCriminal = String(proc.type || '').toLowerCase().includes('criminal');
+        let repContrib = 0;
+        let pldContrib = 0;
+        if (isPassivo && isCriminal) {
+          const crimeObj = crimesList.find(c => c.nome === proc.crimeNome);
+          const mapped = clamp(Number(crimeTypePoints[proc.crimeNome]), 0, 100);
+          let base = mapped;
+          if (!base && crimeObj) {
+            if (crimeObj.risco === 'Inadmissível') base = 100;
+            else if (crimeObj.risco === 'Alto') base = 80;
+            else if (crimeObj.risco === 'Médio') base = 55;
+            else base = 30;
           }
-          score += procContrib;
-        } else {
-          procContrib = 0;
+          if (!base) base = 45;
+          const statusFactor = proc.status === 'Arquivado' ? 0.2 : 1;
+          repContrib = round2(base * 0.35 * statusFactor);
+          pldContrib = round2(base * 0.65 * statusFactor);
+          if ((crimeObj?.risco || '') === 'Inadmissível' || base >= 95) hasInadmissibleCrime = true;
+          crimesRepImpact += repContrib;
+          crimesPldImpact += pldContrib;
         }
-
-        breakdown.processos.push({ ...proc, contrib: procContrib });
+        return { ...proc, repContrib: round2(repContrib), pldContrib: round2(pldContrib), contrib: round2(repContrib + pldContrib) };
       });
 
-      if (form.areaCategoria === 'Baixo') { score += pts.area_baixo; breakdown.area = pts.area_baixo; }
-      else if (form.areaCategoria === 'Médio') { score += pts.area_medio; breakdown.area = pts.area_medio; }
-      else if (form.areaCategoria === 'Alto') { score += pts.area_alto; breakdown.area = pts.area_alto; }
+      const mediaImpact = clamp((form.mediaLinks || []).length * 6, 0, 25);
+      const sanctionsImpact = clamp((form.sanctionLinks || []).length * 12, 0, 35);
+      const pepImpact = (form.pepType !== 'Nao' && (form.pepPersonIds || []).length > 0) ? 10 : 0;
 
-      const thresholds = (settings && settings.thresholds) ? settings.thresholds : { baixo:20, medio:45, alto:75, critico:90 };
-      let level = "Baixo";
-      if (isCritical || score >= thresholds.alto) level = "CRÍTICO";
-      else if (score >= thresholds.medio) level = "Alto";
-      else if (score >= thresholds.baixo) level = "Médio";
+      // Processos não criminais (polo passivo) impactam primariamente risco reputacional.
+      const reputationalScore = clamp(baseResidual + mediaImpact + (sanctionsImpact * 0.35) + nonCriminalIncrement + crimesRepImpact + pepImpact, 0, 100);
+      const pldftScore = clamp(baseResidual + sanctionsImpact + (mediaImpact * 0.2) + crimesPldImpact + pepImpact + (form.hasForeignPartner ? 6 : 0), 0, 100);
 
-      breakdown.totalBeforeMultipliers = score;
-      return { score: Math.min(score,100), level, isCritical, breakdown };
+      const appReputationalClass = hasInadmissibleCrime ? 'Inadmissível' : classifyRiskByScore(reputationalScore);
+      const appPldClass = hasInadmissibleCrime ? 'Inadmissível' : classifyRiskByScore(pldftScore);
+
+      const analystRiskClass = form.analystRiskClass || 'Baixo';
+      const finalRep = applyRiscBalance(analystRiskClass, appReputationalClass, reputationalScore);
+      const finalPld = applyRiscBalance(analystRiskClass, appPldClass, pldftScore);
+      const consolidatedClass = analystRiskClass === 'Inadmissível'
+        ? 'Inadmissível'
+        : severityToClass(Math.max(classToSeverity(finalRep.finalClass), classToSeverity(finalPld.finalClass)));
+
+      const breakdown = {
+        products: productsBreakdown,
+        factors: factorScores,
+        weights: normalizedWeights,
+        controlEffectiveness: E,
+        weightedInherent: round2(weightedSum),
+        residualBase: round2(baseResidual),
+        components: {
+          mediaImpact: round2(mediaImpact),
+          sanctionsImpact: round2(sanctionsImpact),
+          nonCriminalRule: { stepN, deltaPoints, maxSteps, passivoCount: passivoNonCriminal.length, appliedSteps: nonCriminalSteps, impact: nonCriminalIncrement },
+          crimesRepImpact: round2(crimesRepImpact),
+          crimesPldImpact: round2(crimesPldImpact),
+          geographyUF: form.state,
+          geographyUFPoints: clamp(Number((settings?.geographyUFPoints || {})[form.state]) || 40, 0, 100)
+        },
+        processos: processBreakdown,
+        hasInadmissibleCrime
+      };
+
+      return {
+        score: round2(reputationalScore),
+        level: appReputationalClass,
+        isCritical: appReputationalClass === 'Inadmissível' || appPldClass === 'Inadmissível',
+        breakdown,
+        risks: {
+          app: {
+            reputational: { score: round2(reputationalScore), level: appReputationalClass },
+            pldft: { score: round2(pldftScore), level: appPldClass }
+          },
+          analyst: { level: analystRiskClass },
+          final: {
+            reputational: finalRep,
+            pldft: finalPld,
+            consolidated: { level: consolidatedClass }
+          }
+        }
+      };
     }
 
     const Field = ({ label, type="text", value, onChange, options, placeholder }) => (
@@ -417,14 +616,14 @@
       const [areaEdit, setAreaEdit] = useState({ id:'', name:'', risk:'Baixo' });
 
       useEffect(()=>{ (async ()=>{
-        setSettings(await db.settings.get('default'));
+        setSettings(ensureSettingsShape(await db.settings.get('default')));
         setProducts(await db.products.toArray());
         setCrimes(await db.crimes.toArray());
         setAreas(await db.areas.toArray());
       })(); }, []);
 
       const saveSettings = async (newSettings) => {
-        await db.settings.put({ ...newSettings, id:'default' });
+        await db.settings.put(ensureSettingsShape({ ...newSettings, id:'default' }));
         setSettings(newSettings);
         alert('Configurações salvas localmente.');
         refreshAll && refreshAll();
@@ -489,7 +688,7 @@
               </div>
               <div className="flex gap-3">
                 <button className="button-ghost" onClick={clearHistory}>Limpar Histórico</button>
-                <button className="button-primary" onClick={async ()=>{ setSettings(await db.settings.get('default')); alert('Recarregado'); }}>Recarregar</button>
+                <button className="button-primary" onClick={async ()=>{ setSettings(ensureSettingsShape(await db.settings.get('default'))); alert('Recarregado'); }}>Recarregar</button>
               </div>
             </div>
 
@@ -558,7 +757,55 @@
                       <div className="text-[10px] muted mt-2">Os thresholds definem os limites para classificar automaticamente Baixo/Médio/Alto/Crítico.</div>
                     </div>
 
-                    <div className="mt-4"><button className="button-primary w-full" onClick={()=>saveSettings(settings)}>Salvar Pesos & Thresholds</button></div>
+                    <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+                      <div className="text-xs font-bold mb-2">Pesos C/P/Can/G e Efetividade (E)</div>
+                      <div className="grid md:grid-cols-5 gap-2">
+                        {[['client','Cliente'],['product','Produto'],['channel','Canal'],['geography','Geografia']].map(([k,l]) => (
+                          <div key={k} className="flex items-center gap-2"><span className="text-xs">{l}</span><input type="number" step="0.01" value={settings.riskWeights?.[k] ?? 0} onChange={e=>setSettings(s => ({...s, riskWeights:{...s.riskWeights, [k]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        ))}
+                        <div className="flex items-center gap-2"><span className="text-xs">Efetiv.</span><input type="number" min="0" max="1" step="0.01" value={settings.controlEffectiveness ?? 0.2} onChange={e=>setSettings(s => ({...s, controlEffectiveness: Number(e.target.value)}))} className="border p-2 rounded w-20 text-center" /></div>
+                      </div>
+                      <div className="text-[10px] muted mt-2">Se a soma dos pesos for diferente de 1.0, a normalização é automática no cálculo.</div>
+                    </div>
+
+                    <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+                      <div className="text-xs font-bold mb-2">Pontuação por Canal (0–100)</div>
+                      <div className="grid md:grid-cols-2 gap-2">
+                        {[['digital','Digital'],['presencial','Presencial'],['correspondente','Correspondente'],['terceiro','Terceiros']].map(([k,l]) => (
+                          <div key={k} className="flex items-center gap-2"><span className="text-xs">{l}</span><input type="number" min="0" max="100" value={settings.channelScores?.[k] ?? 0} onChange={e=>setSettings(s => ({...s, channelScores:{...s.channelScores, [k]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        ))}
+                      </div>
+                      <div className="text-[10px] muted mt-2">Canal digital é padrão operacional e deve permanecer com pontuação baixa/moderada.</div>
+                    </div>
+
+                    <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+                      <div className="text-xs font-bold mb-2">Regras de Processos Não Criminais — Polo Passivo</div>
+                      <div className="grid md:grid-cols-3 gap-2">
+                        <div className="flex items-center gap-2"><span className="text-xs">N</span><input type="number" min="1" value={settings.nonCriminalRule?.stepN ?? 3} onChange={e=>setSettings(s => ({...s, nonCriminalRule:{...s.nonCriminalRule, stepN: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        <div className="flex items-center gap-2"><span className="text-xs">Δ</span><input type="number" min="0" value={settings.nonCriminalRule?.deltaPoints ?? 6} onChange={e=>setSettings(s => ({...s, nonCriminalRule:{...s.nonCriminalRule, deltaPoints: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        <div className="flex items-center gap-2"><span className="text-xs">Max degraus</span><input type="number" min="1" value={settings.nonCriminalRule?.maxSteps ?? 8} onChange={e=>setSettings(s => ({...s, nonCriminalRule:{...s.nonCriminalRule, maxSteps: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+                      <div className="text-xs font-bold mb-2">Pontuação por UF (Geografia)</div>
+                      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 max-h-48 overflow-y-auto custom-scroll">
+                        {Object.keys(settings.geographyUFPoints || {}).sort().map(uf => (
+                          <div key={uf} className="flex items-center gap-1"><span className="text-xs font-bold">{uf}</span><input type="number" min="0" max="100" value={settings.geographyUFPoints?.[uf] ?? 40} onChange={e=>setSettings(s => ({...s, geographyUFPoints:{...s.geographyUFPoints, [uf]: Number(e.target.value)}}))} className="border p-1 rounded w-16 text-center text-xs" /></div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 p-3 border rounded-xl bg-slate-50">
+                      <div className="text-xs font-bold mb-2">Crime → Pontos (editável, 0–100)</div>
+                      <div className="space-y-2 max-h-40 overflow-y-auto custom-scroll">
+                        {crimes.map(c => (
+                          <div key={c.id} className="flex items-center justify-between gap-2"><span className="text-xs truncate">{c.nome}</span><input type="number" min="0" max="100" value={settings.crimeTypePoints?.[c.nome] ?? 0} onChange={e=>setSettings(s => ({...s, crimeTypePoints:{...s.crimeTypePoints, [c.nome]: Number(e.target.value)}}))} className="border p-2 rounded w-20 text-center" /></div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-4"><button className="button-primary w-full" onClick={()=>saveSettings(settings)}>Salvar Configurações de Risco</button></div>
                   </div>
                 ) : <div>Carregando...</div>}
               </div>
@@ -677,14 +924,16 @@
       const [activeTab, setActiveTab] = useState('wizard');
       const [step, setStep] = useState(0);
       const [formData, setFormData] = useState({
-        personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira',
+        personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira', channelType:'digital',
         capitalSocial:'', filialCount:0, requestDate:'', responseDate:'', requestedBy:'', objetivo:'cliente', objetivoLabel:'Cliente',
         checkItems: [], hasForeignPartner:false, pepType: 'Nao', pepRole: '', pepPersonIds: [],
         products: [], complexity: 'Simples',
         negativeMedia: false, mediaLinks: [], sanctionsList:false, sanctionLinks: [],
         lawsuits: [], estrutura: { socios: [], dirigentes: [] },
         parecerFinal: '', analystName: '', reviewerName: '',
-        areaName: '', areaCategoria: ''
+        areaName: '', areaCategoria: '', analystRiskClass: 'Baixo',
+        website:'', noWebsite:false, domain:'', noDomain:false, institutionalEmail:'', noInstitutionalEmail:false,
+        linkedin:'', noLinkedin:false, linkedinNoEmployees:false, phone:'', noPhone:false, fullAddress:''
       });
       const [history, setHistory] = useState([]);
       const [historyView, setHistoryView] = useState('list');
@@ -713,12 +962,12 @@
         setHistory(await db.analyses.toArray());
         setProducts(await db.products.toArray());
         setCrimes(await db.crimes.toArray());
-        setSettings(await db.settings.get('default'));
+        setSettings(ensureSettingsShape(await db.settings.get('default')));
         setAreas(await db.areas.toArray()); // carregar áreas dinâmicas
       })(); }, []);
 
       const computed = useMemo(()=> calculateRiskAndBreakdown(formData, products, crimes, settings), [formData, products, crimes, settings]);
-      const { score, level, isCritical, breakdown } = computed;
+      const { score, level, isCritical, breakdown, risks } = computed;
 
       const toggleProduct = (id) => {
         setFormData(prev => {
@@ -863,7 +1112,7 @@
       const refreshAll = async () => {
         setProducts(await db.products.toArray());
         setCrimes(await db.crimes.toArray());
-        setSettings(await db.settings.get('default'));
+        setSettings(ensureSettingsShape(await db.settings.get('default')));
         setHistory(await db.analyses.toArray());
         setAreas(await db.areas.toArray());
       };
@@ -988,6 +1237,15 @@
                   <tr><td>PEP</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td></tr>
                   <tr><td>Estado</td><td>{formData.state}</td></tr>
                   <tr><td>Área de Negócio</td><td>{formData.areaName ? formData.areaName + ' — ' + (formData.areaCategoria || '-') : '-'}</td></tr>
+                  <tr><td>Canal Predominante</td><td>{formData.channelType || 'digital'}</td></tr>
+                  <tr><td>Site</td><td>{formData.noWebsite ? 'Não possui' : (formData.website || '-')}</td></tr>
+                  <tr><td>Domínio</td><td>{formData.noDomain ? 'Não possui' : (formData.domain || '-')}</td></tr>
+                  <tr><td>E-mail institucional</td><td>{formData.noInstitutionalEmail ? 'Não possui' : (formData.institutionalEmail || '-')}</td></tr>
+                  <tr><td>LinkedIn</td><td>{formData.noLinkedin ? 'Não existe' : (formData.linkedin || '-')} {formData.linkedinNoEmployees ? ' | Não possui funcionários' : ''}</td></tr>
+                  <tr><td>Telefone</td><td>{formData.noPhone ? 'Não possui' : (formData.phone || '-')}</td></tr>
+                  <tr><td>Endereço completo</td><td>{formData.fullAddress || '-'}</td></tr>
+                  <tr><td>Risco Manual do Analista</td><td>{risks?.analyst?.level || formData.analystRiskClass || 'Baixo'}</td></tr>
+                  <tr><td>RISC Consolidado</td><td>{risks?.final?.consolidated?.level || '-'}</td></tr>
                 </tbody>
               </table>
 
@@ -1033,10 +1291,14 @@
               </table>
             </div>
 
-            <div style={{textAlign:'center',alignSelf:'center',padding:12,border:'6px solid #0f172a',borderRadius:40}}>
-              <div style={{fontSize:12,fontWeight:800,color:'#64748b',textTransform:'uppercase'}}>Score de Risco</div>
-              <div style={{fontSize:56,fontWeight:900,margin:'10px 0'}}>{score}</div>
-              <div style={{fontSize:20,fontWeight:800,color: level === 'CRÍTICO' ? '#dc2626' : '#0f172a', textTransform:'uppercase'}}>Risco {level}</div>
+            <div style={{textAlign:'left',alignSelf:'center',padding:16,border:'6px solid #0f172a',borderRadius:40, background:'#f8fbff'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#64748b',textTransform:'uppercase'}}>Painel RISC — Resultado Final</div>
+              <div style={{fontSize:14,fontWeight:800,marginTop:10}}>Sistema Reputacional: {risks?.app?.reputational?.score} ({risks?.app?.reputational?.level})</div>
+              <div style={{fontSize:14,fontWeight:800}}>Sistema PLD/FT: {risks?.app?.pldft?.score} ({risks?.app?.pldft?.level})</div>
+              <div style={{fontSize:14,fontWeight:800,marginTop:8}}>Analista: {risks?.analyst?.level}</div>
+              <div style={{fontSize:14,fontWeight:800}}>Final Reputacional: {risks?.final?.reputational?.finalClass}</div>
+              <div style={{fontSize:14,fontWeight:800}}>Final PLD/FT: {risks?.final?.pldft?.finalClass}</div>
+              <div style={{fontSize:18,fontWeight:900,color:'#0f172a',marginTop:12,textTransform:'uppercase'}}>Consolidado: {risks?.final?.consolidated?.level}</div>
             </div>
           </div>
 
@@ -1069,21 +1331,21 @@
           </div>
 
           <div style={{marginTop:18}}>
-            <h4 style={{fontWeight:800}}>Detalhamento — Breakdown</h4>
+            <h4 style={{fontWeight:800}}>Resumo Executivo de Risco</h4>
             <table className="report-table">
-              <thead><tr><th>Item</th><th>Categoria</th><th>Observação</th><th>Pontos</th></tr></thead>
+              <thead><tr><th>Item</th><th>Resultado</th></tr></thead>
               <tbody>
-                { breakdown.products.map((p,i) => <tr key={'rp'+i}><td>{p.name}</td><td>Produto</td><td>Risco {p.risk}</td><td>{p.contrib}</td></tr>) }
-                <tr><td>Quadro societário</td><td>Estrutura</td><td>{formData.complexity}</td><td>{breakdown.quadro}</td></tr>
-                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td><td>{breakdown.pep}</td></tr>
-                <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.media}</td></tr>
-                <tr><td>Sanções</td><td>Listas</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.sanctions}</td></tr>
-                <tr><td>Área de Negócio</td><td>Categoria</td><td>{formData.areaCategoria || '-'}</td><td>{breakdown.area || 0}</td></tr>
-                { breakdown.processos.map((pr, i) => <tr key={'pr'+i}><td>{pr.description}</td><td>{pr.type}</td><td>{pr.analyzedRole}{pr.crimeNome ? ' — ' + pr.crimeNome : ''}</td><td>{pr.contrib}</td></tr>) }
-                <tr style={{fontWeight:800}}><td colSpan="3">Total</td><td>{breakdown.totalBeforeMultipliers}</td></tr>
+                <tr><td>Nota do Sistema — Reputacional</td><td>{risks?.app?.reputational?.score} ({risks?.app?.reputational?.level})</td></tr>
+                <tr><td>Nota do Sistema — PLD/FT</td><td>{risks?.app?.pldft?.score} ({risks?.app?.pldft?.level})</td></tr>
+                <tr><td>Classificação do Analista</td><td>{risks?.analyst?.level}</td></tr>
+                <tr><td>Classe Final RISC — Reputacional</td><td>{risks?.final?.reputational?.finalClass}</td></tr>
+                <tr><td>Classe Final RISC — PLD/FT</td><td>{risks?.final?.pldft?.finalClass}</td></tr>
+                <tr><td>Classe Final Consolidada</td><td>{risks?.final?.consolidated?.level}</td></tr>
+                <tr><td>Processos não criminais (passivo)</td><td>{breakdown.components?.nonCriminalRule?.passivoCount || 0} casos | N={breakdown.components?.nonCriminalRule?.stepN} | Δ={breakdown.components?.nonCriminalRule?.deltaPoints}</td></tr>
               </tbody>
             </table>
           </div>
+
 
           <div style={{marginTop:40,borderTop:'1px solid #e6eef8',paddingTop:20, display:'flex', justifyContent:'space-between'}}>
               <div style={{textAlign:'center'}}>
@@ -1125,13 +1387,15 @@
                   <div className="col-span-full flex justify-between items-center border-b pb-4">
                     <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="user"/> Dados Cadastrais</h3>
                     <button onClick={() => { setFormData({
-                      personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira',
+                      personType: 'PJ', name: '', document: '', startDate: '', state: 'SP', nationality: 'Brasileira', channelType:'digital',
                       capitalSocial:'', filialCount:0, requestDate:'', responseDate:'', requestedBy:'', objetivo:'cliente', objetivoLabel:'Cliente',
                       checkItems: [], hasForeignPartner:false, pepType: 'Nao', pepRole: '', pepPersonIds: [],
                       products: [], complexity: 'Simples',
                       negativeMedia: false, mediaLinks: [], sanctionsList:false, sanctionLinks: [],
                       lawsuits: [], estrutura: { socios: [], dirigentes: [] }, parecerFinal: '', analystName: '', reviewerName: '',
-                      areaName:'', areaCategoria:''
+                      areaName:'', areaCategoria:'',
+                      website:'', noWebsite:false, domain:'', noDomain:false, institutionalEmail:'', noInstitutionalEmail:false,
+                      linkedin:'', noLinkedin:false, linkedinNoEmployees:false, phone:'', noPhone:false, fullAddress:''
                     }); setStep(0); }} className="text-[10px] font-black bg-slate-100 px-4 py-1.5 rounded-full hover:bg-slate-200">REINICIAR</button>
                   </div>
 
@@ -1175,6 +1439,47 @@
                     </select>
                   </div>
 
+                  <div>
+                    <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Canal predominante</label>
+                    <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white font-bold text-slate-700" value={formData.channelType || 'digital'} onChange={e=>setFormData({...formData, channelType:e.target.value})}>
+                      <option value="digital">Digital</option>
+                      <option value="presencial">Presencial</option>
+                      <option value="correspondente">Correspondente</option>
+                      <option value="terceiro">Intermediado por Terceiros</option>
+                    </select>
+                  </div>
+
+                  <div className="col-span-full border-b pb-4 mt-2">
+                    <h3 className="font-black text-blue-600 uppercase text-xs tracking-widest flex items-center gap-2"><Icon name="globe"/> Presença e Contatos (Informativo)</h3>
+                  </div>
+
+                  <div>
+                    <Field label="Site da Empresa" value={formData.website || ''} onChange={v=>setFormData({...formData, website:v})} placeholder="https://empresa.com.br" />
+                    <label className="mt-2 flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={!!formData.noWebsite} onChange={e=>setFormData(prev=>({...prev, noWebsite:e.target.checked, website:e.target.checked?'':prev.website}))}/> Não possui</label>
+                  </div>
+                  <div>
+                    <Field label="Domínio da Empresa" value={formData.domain || ''} onChange={v=>setFormData({...formData, domain:v})} placeholder="empresa.com.br" />
+                    <label className="mt-2 flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={!!formData.noDomain} onChange={e=>setFormData(prev=>({...prev, noDomain:e.target.checked, domain:e.target.checked?'':prev.domain}))}/> Não possui</label>
+                  </div>
+                  <div>
+                    <Field label="E-mail Institucional" value={formData.institutionalEmail || ''} onChange={v=>setFormData({...formData, institutionalEmail:v})} placeholder="contato@empresa.com.br" />
+                    <label className="mt-2 flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={!!formData.noInstitutionalEmail} onChange={e=>setFormData(prev=>({...prev, noInstitutionalEmail:e.target.checked, institutionalEmail:e.target.checked?'':prev.institutionalEmail}))}/> Não possui</label>
+                  </div>
+                  <div>
+                    <Field label="LinkedIn" value={formData.linkedin || ''} onChange={v=>setFormData({...formData, linkedin:v})} placeholder="https://linkedin.com/company/..." />
+                    <div className="mt-2 flex flex-col gap-1">
+                      <label className="flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={!!formData.noLinkedin} onChange={e=>setFormData(prev=>({...prev, noLinkedin:e.target.checked, linkedin:e.target.checked?'':prev.linkedin}))}/> Não existe</label>
+                      <label className="flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={!!formData.linkedinNoEmployees} onChange={e=>setFormData(prev=>({...prev, linkedinNoEmployees:e.target.checked}))}/> Não possui funcionários</label>
+                    </div>
+                  </div>
+                  <div>
+                    <Field label="Telefone da Empresa" value={formData.phone || ''} onChange={v=>setFormData({...formData, phone:v})} placeholder="(11) 0000-0000" />
+                    <label className="mt-2 flex items-center gap-2 text-xs font-bold text-slate-600"><input type="checkbox" checked={!!formData.noPhone} onChange={e=>setFormData(prev=>({...prev, noPhone:e.target.checked, phone:e.target.checked?'':prev.phone}))}/> Não possui</label>
+                  </div>
+                  <div className="col-span-full">
+                    <Field label="Endereço Completo" value={formData.fullAddress || ''} onChange={v=>setFormData({...formData, fullAddress:v})} placeholder="Rua, número, bairro, cidade, CEP" />
+                  </div>
+
                   <div className="col-span-full p-5 border-2 border-blue-200 rounded-3xl bg-blue-50">
                     <div className="text-[10px] font-black uppercase text-blue-700 tracking-widest mb-3">Alerta societário relevante</div>
                     <label className="flex items-center gap-3 text-sm font-black text-slate-800">
@@ -1216,7 +1521,7 @@
                       })}
                     </select>
                     { formData.areaCategoria === 'Inadmissível' && (
-                      <div className="muted" style={{color:'#b91c1c', fontWeight:800, marginTop:8}}>Área Inadmissível selecionada — score travado como Risco Inadmissível.</div>
+                      <div className="muted" style={{color:'#b91c1c', fontWeight:800, marginTop:8}}>Área classificada como Inadmissível — fator Geografia será elevado no cálculo.</div>
                     ) }
                   </div>
 
@@ -1431,16 +1736,28 @@
 
               {step === 3 && (
                 <div className="py-20 flex flex-col items-center justify-center space-y-10 animate-in zoom-in-95">
-                  <div className={`w-64 h-64 rounded-[4rem] border-[15px] flex flex-col items-center justify-center shadow-2xl transition-all ${level === 'CRÍTICO' ? 'border-red-600 bg-red-50 text-red-600' : 'border-blue-600 bg-blue-50 text-blue-600'}`}>
+                  <div className={`w-64 h-64 rounded-[4rem] border-[15px] flex flex-col items-center justify-center shadow-2xl transition-all ${level === 'Inadmissível' ? 'border-red-600 bg-red-50 text-red-600' : 'border-blue-600 bg-blue-50 text-blue-600'}`}>
                     <span className="text-8xl font-black">{score}</span>
                     <span className="font-black text-xs uppercase tracking-[0.3em]">Score GRC</span>
                   </div>
                   <div className="text-center">
-                    <h2 className={`text-6xl font-black uppercase italic tracking-tighter ${level === 'CRÍTICO' ? 'text-red-600' : 'text-slate-900'}`}>RISCO {level}</h2>
+                    <h2 className={`text-6xl font-black uppercase italic tracking-tighter ${level === 'Inadmissível' ? 'text-red-600' : 'text-slate-900'}`}>RISCO {level}</h2>
                     <p className="text-slate-400 font-bold uppercase tracking-widest text-sm mt-2">Dossiê validado pelos parâmetros Valloo V15.6</p>
                   </div>
 
+                  <div className="w-full max-w-4xl grid md:grid-cols-3 gap-4">
+                    <div className="p-4 bg-white border rounded-2xl"><div className="text-xs muted">App Reputacional</div><div style={{fontWeight:800, marginTop:6}}>{risks?.app?.reputational?.score} • {risks?.app?.reputational?.level}</div><div className="muted small">Final RISC: {risks?.final?.reputational?.finalClass}</div></div>
+                    <div className="p-4 bg-white border rounded-2xl"><div className="text-xs muted">App PLD/FT</div><div style={{fontWeight:800, marginTop:6}}>{risks?.app?.pldft?.score} • {risks?.app?.pldft?.level}</div><div className="muted small">Final RISC: {risks?.final?.pldft?.finalClass}</div></div>
+                    <div className="p-4 bg-white border rounded-2xl"><div className="text-xs muted">Consolidado</div><div style={{fontWeight:800, marginTop:6}}>{risks?.final?.consolidated?.level}</div><div className="muted small">Analista: {risks?.analyst?.level}</div></div>
+                  </div>
+
                   <div className="w-full max-w-3xl bg-white border rounded-2xl p-6 space-y-4">
+                    <div>
+                        <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Risco Manual do Analista (RISC)</label>
+                        <select className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white mt-3 font-bold" value={formData.analystRiskClass || 'Baixo'} onChange={e=>setFormData(prev=>({...prev, analystRiskClass:e.target.value}))}>
+                          <option>Baixo</option><option>Médio</option><option>Alto</option><option>Inadmissível</option>
+                        </select>
+                    </div>
                     <div>
                         <label className="text-[10px] font-black uppercase text-slate-400 block tracking-widest ml-1">Parecer Final do Analista (informativo)</label>
                         <textarea rows="6" className="w-full border-2 border-slate-100 p-4 rounded-2xl bg-white mt-3" value={formData.parecerFinal || ''} onChange={e=>setFormData(prev=>({...prev, parecerFinal: e.target.value}))} placeholder="Escreva as conclusões e recomendações do analista. Este texto não influencia o score."></textarea>
@@ -1455,7 +1772,9 @@
                     <button onClick={handlePrint} className="bg-slate-900 text-white px-12 py-5 rounded-3xl font-black uppercase tracking-widest flex items-center gap-3 shadow-2xl hover:bg-black hover:-translate-y-1 transition-all">
                       <Icon name="printer" className="w-6 h-6"/> Emitir Relatório Oficial
                     </button>
-                    <button onClick={() => { setFormData(prev=>({...prev, products:[], mediaLinks:[], sanctionLinks:[], lawsuits:[], estrutura: { socios: [], dirigentes: [] }, checkItems: [], hasForeignPartner:false, pepType:'Nao', pepRole:'', pepPersonIds: [], requestDate:'', responseDate:'', requestedBy:'', parecerFinal: '', analystName: '', reviewerName: '' })); setStep(0); }} className="bg-white border-2 border-slate-200 text-slate-500 px-12 py-5 rounded-3xl font-black uppercase tracking-widest hover:bg-slate-50 transition-all">
+                    <button onClick={() => { setFormData(prev=>({...prev, products:[], mediaLinks:[], sanctionLinks:[], lawsuits:[], estrutura: { socios: [], dirigentes: [] }, checkItems: [], hasForeignPartner:false, pepType:'Nao', pepRole:'', pepPersonIds: [], requestDate:'', responseDate:'', requestedBy:'', parecerFinal: '', analystName: '', reviewerName: '', analystRiskClass:'Baixo',
+                      website:'', noWebsite:false, domain:'', noDomain:false, institutionalEmail:'', noInstitutionalEmail:false,
+                      linkedin:'', noLinkedin:false, linkedinNoEmployees:false, phone:'', noPhone:false, fullAddress:'', channelType:'digital' })); setStep(0); }} className="bg-white border-2 border-slate-200 text-slate-500 px-12 py-5 rounded-3xl font-black uppercase tracking-widest hover:bg-slate-50 transition-all">
                       <Icon name="refresh-cw" className="w-6 h-6"/> Nova Análise
                     </button>
                     <button onClick={saveAnalysisToHistory} className="bg-blue-600 text-white px-8 py-3 rounded-2xl font-black shadow-xl">Salvar Análise</button>
@@ -1479,11 +1798,11 @@
                               </thead>
                               <tbody>
                                 {breakdown.products.map((p,idx)=>(<tr key={idx}><td>{p.name}</td><td>Produto ({p.category})</td><td>Risco: {p.risk} | Carga: {p.load}</td><td>{p.contrib}</td></tr>))}
-                                <tr><td>Quadro societário</td><td>Estrutura</td><td>{formData.complexity}</td><td>{breakdown.quadro}</td></tr>
-                                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td><td>{breakdown.pep}</td></tr>
-                                <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.media}</td></tr>
-                                <tr><td>Sanções</td><td>Listas</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.sanctions}</td></tr>
-                                <tr><td>Área de Negócio</td><td>Categoria</td><td>{formData.areaCategoria || '-'}</td><td>{breakdown.area || 0}</td></tr>
+                                <tr><td>Fator Cliente (C)</td><td>Estrutura/PEP</td><td>{formData.complexity}</td><td>{breakdown.factors?.client}</td></tr>
+                                <tr><td>PEP</td><td>Enquadramento</td><td>{formData.pepType}{formData.pepRole ? ' — ' + formData.pepRole : ''}{pepLinkedNames.length ? ' | Vinculados: ' + pepLinkedNames.join(', ') : ''}</td><td>{(formData.pepType !== 'Nao' && (formData.pepPersonIds||[]).length>0) ? 10 : 0}</td></tr>
+                                <tr><td>Mídias</td><td>Reputacional</td><td>{(formData.mediaLinks||[]).length} links</td><td>{breakdown.components?.mediaImpact}</td></tr>
+                                <tr><td>Sanções</td><td>PLD/FT</td><td>{(formData.sanctionLinks||[]).length} links</td><td>{breakdown.components?.sanctionsImpact}</td></tr>
+                                <tr><td>Geografia (UF + Área)</td><td>Categoria</td><td>{formData.state} / {formData.areaCategoria || '-'}</td><td>{breakdown.factors?.geography}</td></tr>
                                 {breakdown.processos.map((proc, i)=>(<tr key={i}><td>{proc.description}</td><td>{proc.type}</td><td>{proc.analyzedRole}{proc.crimeNome ? ' — ' + proc.crimeNome : ''}</td><td>{proc.contrib}</td></tr>))}
                               </tbody>
                             </table>
